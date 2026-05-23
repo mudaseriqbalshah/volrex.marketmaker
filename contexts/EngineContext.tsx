@@ -8,6 +8,10 @@ import { Worker as EngineWorker } from "@/lib/engine/worker";
 import type { Action, NewAction } from "@/lib/engine/types";
 import { writeEncrypted, readEncrypted } from "@/lib/storage";
 import { deriveKey, randomBytes } from "@/lib/crypto";
+import { makeProvider } from "@/lib/chain";
+import { makeSigner } from "@/lib/wallets";
+import { erc20Contract, getErc20Metadata } from "@/lib/erc20";
+import { makeDispatch } from "@/lib/engine/dispatch";
 
 type EngineMode = "manual" | "random" | "roundRobin";
 
@@ -57,12 +61,38 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       queueRef.current = queue;
       setSnapshot(queue.all());
 
-      const dispatch = async (_a: Action) => {
-        // Wired in Task 25 (Engine executors integration).
-        throw new Error("dispatch not yet wired");
+      const settings = vault.data!.settings;
+      const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
+      const signers = new Map<string, ReturnType<typeof makeSigner>>();
+      const addressById = new Map<string, string>();
+      for (const w of vault.data!.tradingWallets) {
+        const s = makeSigner(w.privateKey, provider);
+        signers.set(w.id, s);
+        addressById.set(w.id, s.address);
+      }
+      if (vault.data!.adminFundingWallet) {
+        const s = makeSigner(vault.data!.adminFundingWallet.privateKey, provider);
+        signers.set("admin", s);
+        addressById.set("admin", s.address);
+      }
+      const tokenDecimalsCache = new Map<string, number>();
+      const tokenDecimals = async (addr: string): Promise<number> => {
+        const cached = tokenDecimalsCache.get(addr);
+        if (cached !== undefined) return cached;
+        const m = await getErc20Metadata(erc20Contract(addr, provider));
+        tokenDecimalsCache.set(addr, m.decimals);
+        return m.decimals;
       };
-      const concurrent = vault.data?.settings.maxConcurrent ?? 5;
-      const worker = new EngineWorker({ queue, dispatch, maxConcurrent: concurrent, tickMs: 500 });
+      const dispatch = makeDispatch({
+        provider,
+        getSigner: (id) => { const s = signers.get(id); if (!s) throw new Error(`no signer for ${id}`); return s; },
+        getAddressByWalletId: (id) => { const a = addressById.get(id); if (!a) throw new Error(`no address for ${id}`); return a; },
+        routerAddress: settings.routerAddress,
+        wethAddress: settings.wethAddress,
+        gasMultiplier: settings.gasMultiplier,
+        tokenDecimals,
+      });
+      const worker = new EngineWorker({ queue, dispatch, maxConcurrent: settings.maxConcurrent, tickMs: 500 });
       workerRef.current = worker;
     })();
   }, [vault.unlocked, vault.data?.settings.maxConcurrent]);
