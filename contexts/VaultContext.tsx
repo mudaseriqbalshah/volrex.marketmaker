@@ -36,41 +36,51 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     data: null,
   }));
   const keyRef = useRef<CryptoKey | null>(null);
+  // dataRef mirrors state.data but updates synchronously. Mutations read from
+  // here so a tight loop of `await vault.addX(...)` calls each see the result
+  // of the previous one (instead of all seeing the closure-captured original).
+  const dataRef = useRef<VaultData | null>(null);
 
   const persist = useCallback(async (next: VaultData) => {
     if (!keyRef.current) throw new Error("vault not unlocked");
     await saveVault(next, keyRef.current);
+    dataRef.current = next;
     setState((s) => ({ ...s, data: next }));
   }, []);
 
   const initialize = useCallback(async (password: string) => {
     const { key, data } = await initializeVault(password, emptyVault());
     keyRef.current = key;
+    dataRef.current = data;
     setState({ exists: true, unlocked: true, data });
   }, []);
 
   const unlock = useCallback(async (password: string) => {
     const { key, data } = await unlockVault(password);
     keyRef.current = key;
+    dataRef.current = data;
     setState({ exists: true, unlocked: true, data });
   }, []);
 
   const lock = useCallback(() => {
     keyRef.current = null;
+    dataRef.current = null;
     setState((s) => ({ ...s, unlocked: false, data: null }));
   }, []);
 
   const wipe = useCallback(() => {
     wipeVault();
     keyRef.current = null;
+    dataRef.current = null;
     setState({ exists: false, unlocked: false, data: null });
   }, []);
 
   const mutate = useCallback(async (fn: (d: VaultData) => VaultData) => {
-    if (!state.data) throw new Error("vault locked");
-    const next = fn(state.data);
+    const current = dataRef.current;
+    if (!current) throw new Error("vault locked");
+    const next = fn(current);
     await persist(next);
-  }, [state.data, persist]);
+  }, [persist]);
 
   const api: VaultApi = useMemo(() => ({
     ...state,
