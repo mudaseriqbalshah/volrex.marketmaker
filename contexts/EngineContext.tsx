@@ -7,7 +7,7 @@ import { ActionQueue } from "@/lib/engine/queue";
 import { Worker as EngineWorker } from "@/lib/engine/worker";
 import type { Action, NewAction } from "@/lib/engine/types";
 import { writeEncrypted, readEncrypted } from "@/lib/storage";
-import { deriveKey, randomBytes } from "@/lib/crypto";
+import { deriveKey, randomBytes, fromBase64, toBase64 } from "@/lib/crypto";
 import { makeProvider } from "@/lib/chain";
 import { makeSigner } from "@/lib/wallets";
 import { erc20Contract, getErc20Metadata } from "@/lib/erc20";
@@ -45,6 +45,7 @@ type EngineApi = {
 const EngineContext = createContext<EngineApi | null>(null);
 
 const QUEUE_KEY = "mm.queue.v1";
+const QUEUE_SALT_KEY = "mm.queue-salt.v1";
 const LOG_KEY = "mm.logs.v1";
 
 export function EngineProvider({ children }: { children: ReactNode }) {
@@ -72,8 +73,17 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     }
     void (async () => {
       // Use a deterministic-per-session key for queue persistence so a refresh resumes.
-      // We derive from a constant string + a fresh salt persisted alongside the queue.
-      persistKeyRef.current = await deriveKey("queue", randomBytes(16));
+      // We derive from a constant string + a salt persisted alongside the queue.
+      // On first unlock, generate and persist the salt; on subsequent unlocks, reuse it.
+      let saltB64 = localStorage.getItem(QUEUE_SALT_KEY);
+      let salt: Uint8Array;
+      if (saltB64) {
+        salt = fromBase64(saltB64);
+      } else {
+        salt = randomBytes(16);
+        localStorage.setItem(QUEUE_SALT_KEY, toBase64(salt));
+      }
+      persistKeyRef.current = await deriveKey("queue", salt);
       const initial = (await readEncrypted<Action[]>(QUEUE_KEY, persistKeyRef.current).catch(() => null)) ?? [];
       const queue = new ActionQueue(initial, async (snap) => {
         if (persistKeyRef.current) await writeEncrypted(QUEUE_KEY, snap, persistKeyRef.current);

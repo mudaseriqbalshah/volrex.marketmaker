@@ -61,7 +61,12 @@ export class Worker {
     this.inFlight.add(a.walletId);
     try {
       await this.opts.queue.markRunning(a.id);
-      const { txHash } = await this.opts.dispatch(a);
+      const { txHash, receiptStatus } = await this.opts.dispatch(a);
+      if (receiptStatus === 0) {
+        await this.opts.queue.markFailed(a.id, { code: ErrorCode.Revert, message: "tx mined but reverted" });
+        // revert is not retriable — return without requeueing
+        return;
+      }
       await this.opts.queue.markDone(a.id, txHash);
     } catch (e) {
       const classified = toClassified(e);

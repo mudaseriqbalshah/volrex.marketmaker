@@ -94,6 +94,19 @@ describe("Worker", () => {
     w.stop();
   });
 
+  it("marks failed when receipt status is 0 (on-chain revert)", async () => {
+    const q = new ActionQueue([], persist);
+    const a = await q.enqueue(buy("w1"));
+    const dispatch = vi.fn().mockResolvedValue({ txHash: "0xreverted", receiptStatus: 0 });
+    const w = new Worker({ queue: q, dispatch, maxConcurrent: 5, tickMs: 10 });
+    w.start();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(q.get(a.id)?.status).toBe("failed");
+    expect(q.get(a.id)?.lastError?.code).toBe("revert");
+    expect(dispatch).toHaveBeenCalledTimes(1); // not retried
+    w.stop();
+  });
+
   it("drain mode finishes in-flight and stops taking new", async () => {
     const q = new ActionQueue([], persist);
     await q.enqueue(buy("w1"));
