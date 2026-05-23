@@ -10,7 +10,7 @@ import { writeEncrypted, readEncrypted } from "@/lib/storage";
 import { deriveKey, randomBytes, fromBase64, toBase64 } from "@/lib/crypto";
 import { makeProvider } from "@/lib/chain";
 import { makeSigner } from "@/lib/wallets";
-import { erc20Contract, getErc20Metadata } from "@/lib/erc20";
+import { erc20Contract, getErc20Balance, getErc20Metadata } from "@/lib/erc20";
 import { makeDispatch } from "@/lib/engine/dispatch";
 import { RandomScheduler } from "@/lib/engine/schedulers/random";
 import { RoundRobinScheduler } from "@/lib/engine/schedulers/roundRobin";
@@ -40,6 +40,8 @@ type EngineApi = {
   enqueue: (a: NewAction) => Promise<Action>;
   removeFromQueue: (id: string) => Promise<void>;
   logs: LogEntry[];
+  nativeBalances: Record<string, bigint>;
+  tokenBalances: Record<string, bigint>;
 };
 
 const EngineContext = createContext<EngineApi | null>(null);
@@ -54,6 +56,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   const [running, setRunning] = useState(false);
   const [snapshot, setSnapshot] = useState<Action[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [nativeBalances, setNativeBalances] = useState<Record<string, bigint>>({});
+  const [tokenBalances, setTokenBalances] = useState<Record<string, bigint>>({});
   const queueRef = useRef<ActionQueue | null>(null);
   const workerRef = useRef<EngineWorker | null>(null);
   const schedulerRef = useRef<{ stop: () => void } | null>(null);
@@ -174,6 +178,74 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     vault.data?.settings.gasMultiplier,
   ]);
 
+  // Lifecycle 3: balance polling. Native (VLRX) for every wallet + active-token
+  // balance per wallet. Polled at settings.balancePollMs. Rebuilds when wallets,
+  // active token, or RPC change.
+  useEffect(() => {
+    if (!vault.unlocked || !vault.data) {
+      setNativeBalances({});
+      setTokenBalances({});
+      return;
+    }
+    const settings = vault.data.settings;
+    const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
+    const wallets: Array<{ id: string; address: string }> = [];
+    if (vault.data.adminFundingWallet) {
+      wallets.push({ id: "admin", address: vault.data.adminFundingWallet.address });
+    }
+    for (const w of vault.data.tradingWallets) {
+      wallets.push({ id: w.id, address: w.address });
+    }
+    if (wallets.length === 0) {
+      setNativeBalances({});
+      setTokenBalances({});
+      return;
+    }
+    const activeTokenAddr = vault.data.activeTokenAddress;
+    const tokenC = activeTokenAddr ? erc20Contract(activeTokenAddr, provider) : null;
+
+    let cancelled = false;
+    const poll = async () => {
+      const native: Record<string, bigint> = {};
+      const token: Record<string, bigint> = {};
+      await Promise.all(
+        wallets.map(async (w) => {
+          try {
+            native[w.id] = await provider.getBalance(w.address);
+          } catch {
+            // ignore — partial results are fine
+          }
+          if (tokenC) {
+            try {
+              token[w.id] = await getErc20Balance(tokenC, w.address);
+            } catch {
+              // ignore
+            }
+          }
+        }),
+      );
+      if (!cancelled) {
+        setNativeBalances(native);
+        setTokenBalances(token);
+      }
+    };
+
+    void poll();
+    const interval = setInterval(() => void poll(), settings.balancePollMs);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [
+    vault.unlocked,
+    vault.data?.adminFundingWallet,
+    vault.data?.tradingWallets,
+    vault.data?.activeTokenAddress,
+    vault.data?.settings.rpcUrl,
+    vault.data?.settings.chainId,
+    vault.data?.settings.balancePollMs,
+  ]);
+
   const enqueue = useCallback(async (a: NewAction) => {
     if (!queueRef.current) throw new Error("engine not ready");
     const item = await queueRef.current.enqueue(a);
@@ -221,7 +293,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 
   const api: EngineApi = useMemo(() => ({
     mode, setMode, running, start, stop, drain, queueSnapshot: snapshot, enqueue, removeFromQueue, logs,
-  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs]);
+    nativeBalances, tokenBalances,
+  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs, nativeBalances, tokenBalances]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }

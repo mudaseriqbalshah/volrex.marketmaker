@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useEngine } from "@/contexts/EngineContext";
 import { useVault } from "@/contexts/VaultContext";
 import { AddressDisplay } from "@/components/common/AddressDisplay";
+import { BalanceDisplay } from "@/components/common/BalanceDisplay";
 
 export function FundingCard() {
   const vault = useVault();
@@ -25,10 +26,18 @@ export function FundingCard() {
     }
   }
 
+  const activeToken = vault.data.tokens.find((t) => t.address === vault.data?.activeTokenAddress);
+
   return (
     <div className="border border-slate-800 rounded p-4">
       <h3 className="text-md font-semibold mb-2">Funding</h3>
       <div className="text-sm">Funding wallet: <AddressDisplay address={vault.data.adminFundingWallet.address} /></div>
+      <div className="text-sm mt-1 flex gap-4">
+        <BalanceDisplay value={engine.nativeBalances["admin"]} decimals={18} symbol="VLRX" />
+        {activeToken && (
+          <BalanceDisplay value={engine.tokenBalances["admin"]} decimals={activeToken.decimals} symbol={activeToken.symbol} />
+        )}
+      </div>
       <label className="block text-sm mt-3 text-slate-400">Amount per wallet (native)</label>
       <input value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded" />
       <div className="mt-3 flex gap-2">
