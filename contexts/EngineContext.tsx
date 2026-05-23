@@ -131,6 +131,11 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         cooldownMs: vault.data?.settings.walletCooldownMs ?? 3_000,
       });
       workerRef.current = worker;
+      // Auto-start the worker on engine init so queued items always drain
+      // without needing a manual Start click. The Start button still controls
+      // the scheduler in random / roundRobin modes; Stop pauses everything.
+      worker.start();
+      setRunning(true);
     })();
   }, [vault.unlocked, vault.data?.settings.maxConcurrent, vault.data?.settings.walletCooldownMs]);
 
