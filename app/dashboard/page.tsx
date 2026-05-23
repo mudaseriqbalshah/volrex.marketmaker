@@ -1,3 +1,14 @@
-export default function Dashboard() {
-  return <div><h1 className="text-xl font-semibold">Dashboard</h1><p className="text-sm text-slate-400 mt-2">Wired in Task 26.</p></div>;
+"use client";
+import { EngineCard } from "@/components/dashboard/EngineCard";
+import { FundingCard } from "@/components/dashboard/FundingCard";
+import { QuickFire } from "@/components/dashboard/QuickFire";
+
+export default function DashboardPage() {
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <EngineCard />
+      <FundingCard />
+      <QuickFire />
+    </div>
+  );
 }

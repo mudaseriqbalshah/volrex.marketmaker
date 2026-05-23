@@ -1,0 +1,40 @@
+"use client";
+
+import { useState } from "react";
+import { useEngine } from "@/contexts/EngineContext";
+import { useVault } from "@/contexts/VaultContext";
+import { AddressDisplay } from "@/components/common/AddressDisplay";
+
+export function FundingCard() {
+  const vault = useVault();
+  const engine = useEngine();
+  const [amount, setAmount] = useState("0.01");
+
+  if (!vault.data?.adminFundingWallet) return <div className="border border-slate-800 rounded p-4 text-sm text-slate-400">No funding wallet set. Configure in Wallets.</div>;
+
+  async function distribute() {
+    if (!vault.data) return;
+    for (const w of vault.data.tradingWallets) {
+      await engine.enqueue({ kind: "TransferETH", walletId: "admin", params: { toWalletId: w.id, amount } });
+    }
+  }
+  async function collect() {
+    if (!vault.data) return;
+    for (const w of vault.data.tradingWallets) {
+      await engine.enqueue({ kind: "TransferBackETH", walletId: w.id, params: { toWalletId: "admin", amount: "all-minus-buffer", gasBuffer: "0.001" } });
+    }
+  }
+
+  return (
+    <div className="border border-slate-800 rounded p-4">
+      <h3 className="text-md font-semibold mb-2">Funding</h3>
+      <div className="text-sm">Funding wallet: <AddressDisplay address={vault.data.adminFundingWallet.address} /></div>
+      <label className="block text-sm mt-3 text-slate-400">Amount per wallet (native)</label>
+      <input value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded" />
+      <div className="mt-3 flex gap-2">
+        <button onClick={distribute} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm">Distribute</button>
+        <button onClick={collect} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">Collect</button>
+      </div>
+    </div>
+  );
+}
