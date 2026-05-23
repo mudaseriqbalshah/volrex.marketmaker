@@ -22,8 +22,27 @@ export type BaseAction = {
   completedAt?: number;
 };
 
-export type BuyParams = { tokenAddress: string; amountNative: string; slippageBps: number };
-export type SellParams = { tokenAddress: string; amountToken: string; slippageBps: number };
+// AmountMode controls how the dispatch interprets the amount field:
+// - "absolute" (default): the amount is the literal token quantity (decimal string).
+// - "percentage": the amount is a percentage 0-100 of the wallet's current
+//   balance — resolved at dispatch time so it tracks the live balance.
+export type AmountMode = "absolute" | "percentage";
+
+export type BuyParams = {
+  tokenAddress: string;
+  amountNative: string;
+  slippageBps: number;
+  amountMode?: AmountMode;
+  // For percentage mode only: the minimum amount of native to leave for gas
+  // (decimal string, in native units). Defaults to "0.001" if omitted.
+  gasReserve?: string;
+};
+export type SellParams = {
+  tokenAddress: string;
+  amountToken: string;
+  slippageBps: number;
+  amountMode?: AmountMode;
+};
 export type ApproveParams = { tokenAddress: string; spender: string; amount: string };
 export type TransferEthParams = { toWalletId: string; amount: string | "all-minus-buffer"; gasBuffer?: string };
 export type TransferTokenParams = { tokenAddress: string; toWalletId: string; amount: string };

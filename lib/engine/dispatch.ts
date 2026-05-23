@@ -1,11 +1,22 @@
 import type { Action } from "@/lib/engine/types";
 import type { Contract, JsonRpcProvider, Wallet } from "ethers";
 import { parseEther, parseUnits } from "ethers";
-import { erc20Contract, getErc20Allowance } from "@/lib/erc20";
+import { erc20Contract, getErc20Allowance, getErc20Balance } from "@/lib/erc20";
 import { routerContract } from "@/lib/router";
 import type { RouterCtx } from "@/lib/engine/executors";
 import { executeApprove, executeBuy, executeSell, executeTransferETH, executeTransferToken } from "@/lib/engine/executors";
 import { LocalNonceTracker } from "@/lib/nonce";
+
+// Apply a percentage (string "0".."100") to a bigint balance.
+// Uses 4-decimal precision internally so 33.33% works correctly.
+function applyPercentage(balance: bigint, percentageStr: string): bigint {
+  const pct = Number(percentageStr);
+  if (!Number.isFinite(pct) || pct <= 0) return 0n;
+  const clamped = Math.min(pct, 100);
+  // Scale to int with 4 decimals (e.g. 33.3333% -> 333333). Divide by 1_000_000.
+  const scaled = BigInt(Math.round(clamped * 10_000));
+  return (balance * scaled) / 1_000_000n;
+}
 
 export type DispatchDeps = {
   provider: JsonRpcProvider;
@@ -56,13 +67,34 @@ export function makeDispatch(deps: DispatchDeps): (a: Action) => Promise<{ txHas
       }
       case "Buy": {
         const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
-        return executeBuy({ signer, nonce, gasPrice, gasMultiplier, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative: parseEther(a.params.amountNative), slippageBps: a.params.slippageBps });
+        // Resolve the actual amount. For percentage mode, read native balance
+        // at dispatch time and reserve some for gas before applying the %.
+        let amountNative: bigint;
+        if (a.params.amountMode === "percentage") {
+          const balance = await deps.provider.getBalance(signer.address);
+          const reserve = parseEther(a.params.gasReserve ?? "0.001");
+          const spendable = balance > reserve ? balance - reserve : 0n;
+          amountNative = applyPercentage(spendable, a.params.amountNative);
+          if (amountNative === 0n) throw new Error(`Buy %: not enough native balance after gas reserve (have ${balance}, reserve ${reserve})`);
+        } else {
+          amountNative = parseEther(a.params.amountNative);
+        }
+        return executeBuy({ signer, nonce, gasPrice, gasMultiplier, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative, slippageBps: a.params.slippageBps });
       }
       case "Sell": {
         const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
         const tokenC = erc20Contract(a.params.tokenAddress, signer);
         const decimals = await deps.tokenDecimals(a.params.tokenAddress);
-        const amountToken = parseUnits(a.params.amountToken, decimals);
+        // Resolve the actual token amount. For percentage mode, read token
+        // balance at dispatch time and apply the percentage.
+        let amountToken: bigint;
+        if (a.params.amountMode === "percentage") {
+          const balance = await getErc20Balance(tokenC, signer.address);
+          amountToken = applyPercentage(balance, a.params.amountToken);
+          if (amountToken === 0n) throw new Error(`Sell %: wallet has no token balance for ${a.params.tokenAddress}`);
+        } else {
+          amountToken = parseUnits(a.params.amountToken, decimals);
+        }
         const allowance = await getErc20Allowance(tokenC, signer.address, deps.routerAddress);
 
         let sellNonce = nonce;
