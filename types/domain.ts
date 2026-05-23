@@ -22,6 +22,9 @@ export type Settings = {
   gasMultiplier: number;
   balancePollMs: number;
   autoLockIdleMs: number;
+  // Minimum gap between dispatches to the same wallet (ms). Lets the pool
+  // settle between back-to-back swaps and avoids same-block competition.
+  walletCooldownMs: number;
 };
 
 export type VaultData = {
@@ -50,6 +53,7 @@ export const DEFAULT_SETTINGS: Settings = {
   gasMultiplier: 1.1,
   balancePollMs: 15_000,
   autoLockIdleMs: 30 * 60 * 1000,
+  walletCooldownMs: 3_000,
 };
 
 export function emptyVault(): VaultData {

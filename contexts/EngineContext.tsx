@@ -111,10 +111,16 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         if (!fn) throw new Error("dispatch not ready — set funding wallet and at least one trading wallet first");
         return fn(a);
       };
-      const worker = new EngineWorker({ queue, dispatch: indirectDispatch, maxConcurrent: vault.data?.settings.maxConcurrent ?? 5, tickMs: 500 });
+      const worker = new EngineWorker({
+        queue,
+        dispatch: indirectDispatch,
+        maxConcurrent: vault.data?.settings.maxConcurrent ?? 5,
+        tickMs: 500,
+        cooldownMs: vault.data?.settings.walletCooldownMs ?? 3_000,
+      });
       workerRef.current = worker;
     })();
-  }, [vault.unlocked, vault.data?.settings.maxConcurrent]);
+  }, [vault.unlocked, vault.data?.settings.maxConcurrent, vault.data?.settings.walletCooldownMs]);
 
   // Lifecycle 2: provider + signers + dispatch. Rebuilds whenever wallets or
   // chain-related settings change — so the engine picks up newly-added wallets
@@ -175,8 +181,16 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "done", txHash: result.txHash });
         return result;
       } catch (err: unknown) {
-        const errorMessage = err instanceof Error ? err.message : String(err);
-        const errorCode = (err as { code?: string }).code ?? "UNKNOWN";
+        const e = err as { code?: string; reason?: string; shortMessage?: string; message?: string; info?: { error?: { message?: string } } };
+        // Prefer the most specific available — reason (e.g. "INSUFFICIENT_OUTPUT_AMOUNT"),
+        // then nested RPC info.error.message, then shortMessage, then message.
+        const errorMessage =
+          e.reason ??
+          e.info?.error?.message ??
+          e.shortMessage ??
+          e.message ??
+          String(err);
+        const errorCode = e.code ?? "UNKNOWN";
         await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "failed", errorCode, errorMessage });
         throw err;
       }

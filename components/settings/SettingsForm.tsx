@@ -2,11 +2,17 @@
 
 import { useState } from "react";
 import { useVault } from "@/contexts/VaultContext";
-import type { Settings } from "@/types/domain";
+import { DEFAULT_SETTINGS, type Settings } from "@/types/domain";
 
 export function SettingsForm() {
   const vault = useVault();
-  const [s, setS] = useState<Settings | null>(vault.data?.settings ?? null);
+  // Merge persisted settings with defaults so newly-added fields (e.g.
+  // walletCooldownMs) render with a sane value for vaults saved before
+  // those fields existed.
+  const initial = vault.data?.settings
+    ? { ...DEFAULT_SETTINGS, ...vault.data.settings }
+    : null;
+  const [s, setS] = useState<Settings | null>(initial);
   const [saving, setSaving] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -29,6 +35,7 @@ export function SettingsForm() {
       <Field label="Gas multiplier"><input type="number" step="0.05" value={s.gasMultiplier} onChange={(e) => set("gasMultiplier", Number(e.target.value))} className="input" /></Field>
       <Field label="Balance poll interval (ms)"><input type="number" value={s.balancePollMs} onChange={(e) => set("balancePollMs", Number(e.target.value))} className="input" /></Field>
       <Field label="Auto-lock idle (ms)"><input type="number" value={s.autoLockIdleMs} onChange={(e) => set("autoLockIdleMs", Number(e.target.value))} className="input" /></Field>
+      <Field label="Per-wallet cooldown (ms)"><input type="number" value={s.walletCooldownMs} onChange={(e) => set("walletCooldownMs", Number(e.target.value))} className="input" /></Field>
       <div className="lg:col-span-2 flex items-center gap-3">
         <button onClick={save} disabled={saving} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50">{saving ? "Saving…" : "Save"}</button>
         {msg && <span className="text-sm text-emerald-400">{msg}</span>}
