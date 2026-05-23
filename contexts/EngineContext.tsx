@@ -14,6 +14,8 @@ import { erc20Contract, getErc20Metadata } from "@/lib/erc20";
 import { makeDispatch } from "@/lib/engine/dispatch";
 import { RandomScheduler } from "@/lib/engine/schedulers/random";
 import { RoundRobinScheduler } from "@/lib/engine/schedulers/roundRobin";
+import { ActionLogger } from "@/lib/logger";
+import type { LogEntry } from "@/lib/logger";
 
 type EngineMode = "manual" | "random" | "roundRobin";
 
@@ -37,28 +39,34 @@ type EngineApi = {
   queueSnapshot: Action[];
   enqueue: (a: NewAction) => Promise<Action>;
   removeFromQueue: (id: string) => Promise<void>;
+  logs: LogEntry[];
 };
 
 const EngineContext = createContext<EngineApi | null>(null);
 
 const QUEUE_KEY = "mm.queue.v1";
+const LOG_KEY = "mm.logs.v1";
 
 export function EngineProvider({ children }: { children: ReactNode }) {
   const vault = useVault();
   const [mode, setMode] = useState<EngineMode>("manual");
   const [running, setRunning] = useState(false);
   const [snapshot, setSnapshot] = useState<Action[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
   const queueRef = useRef<ActionQueue | null>(null);
   const workerRef = useRef<EngineWorker | null>(null);
   const schedulerRef = useRef<{ stop: () => void } | null>(null);
   const persistKeyRef = useRef<CryptoKey | null>(null);
+  const loggerRef = useRef<ActionLogger | null>(null);
 
   useEffect(() => {
     if (!vault.unlocked) {
       queueRef.current = null;
       workerRef.current?.stop();
       workerRef.current = null;
+      loggerRef.current = null;
       setSnapshot([]);
+      setLogs([]);
       setRunning(false);
       return;
     }
@@ -73,6 +81,15 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       });
       queueRef.current = queue;
       setSnapshot(queue.all());
+
+      // Hydrate logger from encrypted storage
+      const initialLogs = (await readEncrypted<LogEntry[]>(LOG_KEY, persistKeyRef.current).catch(() => null)) ?? [];
+      const logger = new ActionLogger(initialLogs, async (entries) => {
+        if (persistKeyRef.current) await writeEncrypted(LOG_KEY, entries, persistKeyRef.current);
+        setLogs([...entries]);
+      }, 1000);
+      loggerRef.current = logger;
+      setLogs(logger.all());
 
       const settings = vault.data!.settings;
       const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
@@ -96,7 +113,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         tokenDecimalsCache.set(addr, m.decimals);
         return m.decimals;
       };
-      const dispatch = makeDispatch({
+      const baseDispatch = makeDispatch({
         provider,
         getSigner: (id) => { const s = signers.get(id); if (!s) throw new Error(`no signer for ${id}`); return s; },
         getAddressByWalletId: (id) => { const a = addressById.get(id); if (!a) throw new Error(`no address for ${id}`); return a; },
@@ -105,6 +122,19 @@ export function EngineProvider({ children }: { children: ReactNode }) {
         gasMultiplier: settings.gasMultiplier,
         tokenDecimals,
       });
+      // Wrap dispatch to append log entries on success/failure
+      const dispatch = async (a: Action) => {
+        try {
+          const result = await baseDispatch(a);
+          await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "done", txHash: result.txHash });
+          return result;
+        } catch (err: unknown) {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          const errorCode = (err as { code?: string }).code ?? "UNKNOWN";
+          await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "failed", errorCode, errorMessage });
+          throw err;
+        }
+      };
       const worker = new EngineWorker({ queue, dispatch, maxConcurrent: settings.maxConcurrent, tickMs: 500 });
       workerRef.current = worker;
     })();
@@ -156,8 +186,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api: EngineApi = useMemo(() => ({
-    mode, setMode, running, start, stop, drain, queueSnapshot: snapshot, enqueue, removeFromQueue,
-  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue]);
+    mode, setMode, running, start, stop, drain, queueSnapshot: snapshot, enqueue, removeFromQueue, logs,
+  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }
