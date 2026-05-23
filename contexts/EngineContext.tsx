@@ -125,7 +125,21 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       return;
     }
     const settings = vault.data.settings;
-    const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
+    // Env fallback: if a vault was saved before env vars were set, use
+    // NEXT_PUBLIC_* values instead of the empty strings persisted in the vault.
+    const rpcUrl = settings.rpcUrl || process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.volrex.network/";
+    const chainId = settings.chainId || Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 1378);
+    const routerAddress = settings.routerAddress || process.env.NEXT_PUBLIC_ROUTER_ADDRESS || "";
+    const wethAddress = settings.wethAddress || process.env.NEXT_PUBLIC_WETH_ADDRESS || "";
+    if (!routerAddress || !wethAddress) {
+      dispatchRef.current = async () => {
+        throw new Error(
+          "router or WETH address not configured — go to Settings and fill in NEXT_PUBLIC_ROUTER_ADDRESS / NEXT_PUBLIC_WETH_ADDRESS",
+        );
+      };
+      return;
+    }
+    const provider = makeProvider({ rpcUrl, chainId, name: "configured" });
     const signers = new Map<string, ReturnType<typeof makeSigner>>();
     const addressById = new Map<string, string>();
     for (const w of vault.data.tradingWallets) {
@@ -150,8 +164,8 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       provider,
       getSigner: (id) => { const s = signers.get(id); if (!s) throw new Error(`no signer for ${id}`); return s; },
       getAddressByWalletId: (id) => { const a = addressById.get(id); if (!a) throw new Error(`no address for ${id}`); return a; },
-      routerAddress: settings.routerAddress,
-      wethAddress: settings.wethAddress,
+      routerAddress,
+      wethAddress,
       gasMultiplier: settings.gasMultiplier,
       tokenDecimals,
     });
@@ -188,7 +202,9 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       return;
     }
     const settings = vault.data.settings;
-    const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
+    const rpcUrl = settings.rpcUrl || process.env.NEXT_PUBLIC_RPC_URL || "https://rpc.volrex.network/";
+    const chainId = settings.chainId || Number(process.env.NEXT_PUBLIC_CHAIN_ID ?? 1378);
+    const provider = makeProvider({ rpcUrl, chainId, name: "configured" });
     const wallets: Array<{ id: string; address: string }> = [];
     if (vault.data.adminFundingWallet) {
       wallets.push({ id: "admin", address: vault.data.adminFundingWallet.address });

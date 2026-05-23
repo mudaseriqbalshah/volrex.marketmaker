@@ -33,11 +33,19 @@ export type VaultData = {
   settings: Settings;
 };
 
+// Pull NEXT_PUBLIC_* env vars at module load so fresh vaults pre-fill
+// settings. Existing vaults persist whatever was saved — EngineContext
+// applies env fallback at dispatch time to cover the migration case.
+const ENV_RPC = process.env.NEXT_PUBLIC_RPC_URL ?? "";
+const ENV_CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID ?? "";
+const ENV_ROUTER = process.env.NEXT_PUBLIC_ROUTER_ADDRESS ?? "";
+const ENV_WETH = process.env.NEXT_PUBLIC_WETH_ADDRESS ?? "";
+
 export const DEFAULT_SETTINGS: Settings = {
-  rpcUrl: "https://rpc.volrex.network/",
-  chainId: 1378,
-  routerAddress: "",
-  wethAddress: "",
+  rpcUrl: ENV_RPC || "https://rpc.volrex.network/",
+  chainId: Number(ENV_CHAIN_ID) || 1378,
+  routerAddress: ENV_ROUTER,
+  wethAddress: ENV_WETH,
   maxConcurrent: 5,
   gasMultiplier: 1.1,
   balancePollMs: 15_000,
