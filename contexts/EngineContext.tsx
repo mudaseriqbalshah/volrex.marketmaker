@@ -25,8 +25,8 @@ type SchedulerCfg = {
 };
 
 const DEFAULT_SCHED_CFG: SchedulerCfg = {
-  random: { minDelayMs: 30_000, maxDelayMs: 90_000, minAmount: "0.005", maxAmount: "0.02", buyRatio: 0.55, slippageBps: 200 },
-  roundRobin: { cycleDelayMs: 60_000, amountPerWallet: "0.01", buyRatio: 0.5, slippageBps: 200 },
+  random: { minDelayMs: 5_000, maxDelayMs: 15_000, minAmount: "0.005", maxAmount: "0.02", buyRatio: 0.55, slippageBps: 200 },
+  roundRobin: { cycleDelayMs: 10_000, amountPerWallet: "0.01", buyRatio: 0.5, slippageBps: 200 },
 };
 
 type EngineApi = {
