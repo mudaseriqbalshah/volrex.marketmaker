@@ -42,6 +42,7 @@ type EngineApi = {
   logs: LogEntry[];
   nativeBalances: Record<string, bigint>;
   tokenBalances: Record<string, bigint>;
+  resetStuckActions: () => Promise<number>;
 };
 
 const EngineContext = createContext<EngineApi | null>(null);
@@ -91,7 +92,18 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       }
       persistKeyRef.current = await deriveKey("queue", salt);
       const initial = (await readEncrypted<Action[]>(QUEUE_KEY, persistKeyRef.current).catch(() => null)) ?? [];
-      const queue = new ActionQueue(initial, async (snap) => {
+      // Reset any zombie "running" actions to "queued". They were marked
+      // running by a prior session, but that session's in-memory worker is
+      // gone — no one is dispatching them, and isWalletBusy would block
+      // every future action for those wallets if left as-is.
+      const hasZombies = initial.some((a) => a.status === "running");
+      const repaired = hasZombies
+        ? initial.map((a) => (a.status === "running" ? { ...a, status: "queued" as const, startedAt: undefined } : a))
+        : initial;
+      if (hasZombies) {
+        await writeEncrypted(QUEUE_KEY, repaired, persistKeyRef.current);
+      }
+      const queue = new ActionQueue(repaired, async (snap) => {
         if (persistKeyRef.current) await writeEncrypted(QUEUE_KEY, snap, persistKeyRef.current);
         setSnapshot(snap);
       });
@@ -321,10 +333,22 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     await queueRef.current.remove(id);
   }, []);
 
+  // Manually flip any action stuck in "running" back to "queued" so the worker
+  // can pick it up again. Returns the number of actions reset.
+  const resetStuckActions = useCallback(async () => {
+    const queue = queueRef.current;
+    if (!queue) return 0;
+    const stuck = queue.all().filter((a) => a.status === "running");
+    for (const a of stuck) {
+      await queue.requeue(a.id);
+    }
+    return stuck.length;
+  }, []);
+
   const api: EngineApi = useMemo(() => ({
     mode, setMode, running, start, stop, drain, queueSnapshot: snapshot, enqueue, removeFromQueue, logs,
-    nativeBalances, tokenBalances,
-  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs, nativeBalances, tokenBalances]);
+    nativeBalances, tokenBalances, resetStuckActions,
+  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs, nativeBalances, tokenBalances, resetStuckActions]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }
