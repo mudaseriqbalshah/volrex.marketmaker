@@ -2,3 +2,4 @@
 @tailwind components;
 @tailwind utilities;
 body { @apply bg-slate-950 text-slate-100; }
+.input { @apply w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded; }
