@@ -12,8 +12,20 @@ import { makeProvider } from "@/lib/chain";
 import { makeSigner } from "@/lib/wallets";
 import { erc20Contract, getErc20Metadata } from "@/lib/erc20";
 import { makeDispatch } from "@/lib/engine/dispatch";
+import { RandomScheduler } from "@/lib/engine/schedulers/random";
+import { RoundRobinScheduler } from "@/lib/engine/schedulers/roundRobin";
 
 type EngineMode = "manual" | "random" | "roundRobin";
+
+type SchedulerCfg = {
+  random: { minDelayMs: number; maxDelayMs: number; minAmount: string; maxAmount: string; buyRatio: number; slippageBps: number };
+  roundRobin: { cycleDelayMs: number; amountPerWallet: string; buyRatio: number; slippageBps: number };
+};
+
+const DEFAULT_SCHED_CFG: SchedulerCfg = {
+  random: { minDelayMs: 30_000, maxDelayMs: 90_000, minAmount: "0.005", maxAmount: "0.02", buyRatio: 0.55, slippageBps: 200 },
+  roundRobin: { cycleDelayMs: 60_000, amountPerWallet: "0.01", buyRatio: 0.5, slippageBps: 200 },
+};
 
 type EngineApi = {
   mode: EngineMode;
@@ -38,6 +50,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<Action[]>([]);
   const queueRef = useRef<ActionQueue | null>(null);
   const workerRef = useRef<EngineWorker | null>(null);
+  const schedulerRef = useRef<{ stop: () => void } | null>(null);
   const persistKeyRef = useRef<CryptoKey | null>(null);
 
   useEffect(() => {
@@ -97,14 +110,44 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     })();
   }, [vault.unlocked, vault.data?.settings.maxConcurrent]);
 
-  const start = useCallback(() => { workerRef.current?.start(); workerRef.current?.resume(); setRunning(true); }, []);
-  const stop = useCallback(() => { workerRef.current?.stop(); setRunning(false); }, []);
-  const drain = useCallback(() => { workerRef.current?.drain(); setRunning(false); }, []);
-
   const enqueue = useCallback(async (a: NewAction) => {
     if (!queueRef.current) throw new Error("engine not ready");
     const item = await queueRef.current.enqueue(a);
     return item;
+  }, []);
+
+  const start = useCallback(() => {
+    workerRef.current?.start(); workerRef.current?.resume();
+    setRunning(true);
+    if (mode === "manual") return;
+    if (!vault.data) return;
+    const wallets = vault.data.tradingWallets.map((w) => w.id);
+    const tokenAddress = vault.data.activeTokenAddress;
+    if (!tokenAddress || wallets.length === 0) return;
+    const emit = (a: NewAction) => { void enqueue(a); };
+    // Eligibility starts permissive; balance polling is out of v1 scope.
+    // Bad-eligibility actions fail at chain-call time and the worker logs/skips them.
+    const eligibleBuy = () => true;
+    const eligibleSell = () => true;
+    if (mode === "random") {
+      const cfg = DEFAULT_SCHED_CFG.random;
+      const s = new RandomScheduler({ wallets, tokenAddress, ...cfg, eligibleBuy, eligibleSell, emit });
+      s.start(); schedulerRef.current = s;
+    } else if (mode === "roundRobin") {
+      const cfg = DEFAULT_SCHED_CFG.roundRobin;
+      const s = new RoundRobinScheduler({ wallets, tokenAddress, ...cfg, eligibleBuy, eligibleSell, emit });
+      s.start(); schedulerRef.current = s;
+    }
+  }, [mode, vault.data, enqueue]);
+
+  const stop = useCallback(() => {
+    schedulerRef.current?.stop(); schedulerRef.current = null;
+    workerRef.current?.stop(); setRunning(false);
+  }, []);
+
+  const drain = useCallback(() => {
+    schedulerRef.current?.stop(); schedulerRef.current = null;
+    workerRef.current?.drain(); setRunning(false);
   }, []);
 
   const removeFromQueue = useCallback(async (id: string) => {
