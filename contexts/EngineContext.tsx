@@ -59,22 +59,24 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   const schedulerRef = useRef<{ stop: () => void } | null>(null);
   const persistKeyRef = useRef<CryptoKey | null>(null);
   const loggerRef = useRef<ActionLogger | null>(null);
+  const dispatchRef = useRef<((a: Action) => Promise<{ txHash: string; receiptStatus: number }>) | null>(null);
 
+  // Lifecycle 1: queue + logger + worker. Bound to vault.unlocked.
+  // The worker calls dispatchRef.current(action), which is swapped in Lifecycle 2
+  // whenever wallets or settings change — so adding a wallet after unlock works.
   useEffect(() => {
     if (!vault.unlocked) {
       queueRef.current = null;
       workerRef.current?.stop();
       workerRef.current = null;
       loggerRef.current = null;
+      dispatchRef.current = null;
       setSnapshot([]);
       setLogs([]);
       setRunning(false);
       return;
     }
     void (async () => {
-      // Use a deterministic-per-session key for queue persistence so a refresh resumes.
-      // We derive from a constant string + a salt persisted alongside the queue.
-      // On first unlock, generate and persist the salt; on subsequent unlocks, reuse it.
       let saltB64 = localStorage.getItem(QUEUE_SALT_KEY);
       let salt: Uint8Array;
       if (saltB64) {
@@ -92,7 +94,6 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       queueRef.current = queue;
       setSnapshot(queue.all());
 
-      // Hydrate logger from encrypted storage
       const initialLogs = (await readEncrypted<LogEntry[]>(LOG_KEY, persistKeyRef.current).catch(() => null)) ?? [];
       const logger = new ActionLogger(initialLogs, async (entries) => {
         if (persistKeyRef.current) await writeEncrypted(LOG_KEY, entries, persistKeyRef.current);
@@ -101,54 +102,77 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       loggerRef.current = logger;
       setLogs(logger.all());
 
-      const settings = vault.data!.settings;
-      const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
-      const signers = new Map<string, ReturnType<typeof makeSigner>>();
-      const addressById = new Map<string, string>();
-      for (const w of vault.data!.tradingWallets) {
-        const s = makeSigner(w.privateKey, provider);
-        signers.set(w.id, s);
-        addressById.set(w.id, s.address);
-      }
-      if (vault.data!.adminFundingWallet) {
-        const s = makeSigner(vault.data!.adminFundingWallet.privateKey, provider);
-        signers.set("admin", s);
-        addressById.set("admin", s.address);
-      }
-      const tokenDecimalsCache = new Map<string, number>();
-      const tokenDecimals = async (addr: string): Promise<number> => {
-        const cached = tokenDecimalsCache.get(addr);
-        if (cached !== undefined) return cached;
-        const m = await getErc20Metadata(erc20Contract(addr, provider));
-        tokenDecimalsCache.set(addr, m.decimals);
-        return m.decimals;
+      const indirectDispatch = async (a: Action) => {
+        const fn = dispatchRef.current;
+        if (!fn) throw new Error("dispatch not ready — set funding wallet and at least one trading wallet first");
+        return fn(a);
       };
-      const baseDispatch = makeDispatch({
-        provider,
-        getSigner: (id) => { const s = signers.get(id); if (!s) throw new Error(`no signer for ${id}`); return s; },
-        getAddressByWalletId: (id) => { const a = addressById.get(id); if (!a) throw new Error(`no address for ${id}`); return a; },
-        routerAddress: settings.routerAddress,
-        wethAddress: settings.wethAddress,
-        gasMultiplier: settings.gasMultiplier,
-        tokenDecimals,
-      });
-      // Wrap dispatch to append log entries on success/failure
-      const dispatch = async (a: Action) => {
-        try {
-          const result = await baseDispatch(a);
-          await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "done", txHash: result.txHash });
-          return result;
-        } catch (err: unknown) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          const errorCode = (err as { code?: string }).code ?? "UNKNOWN";
-          await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "failed", errorCode, errorMessage });
-          throw err;
-        }
-      };
-      const worker = new EngineWorker({ queue, dispatch, maxConcurrent: settings.maxConcurrent, tickMs: 500 });
+      const worker = new EngineWorker({ queue, dispatch: indirectDispatch, maxConcurrent: vault.data?.settings.maxConcurrent ?? 5, tickMs: 500 });
       workerRef.current = worker;
     })();
   }, [vault.unlocked, vault.data?.settings.maxConcurrent]);
+
+  // Lifecycle 2: provider + signers + dispatch. Rebuilds whenever wallets or
+  // chain-related settings change — so the engine picks up newly-added wallets
+  // and updated RPC/router/WETH without needing a lock/unlock cycle.
+  useEffect(() => {
+    if (!vault.unlocked || !vault.data) {
+      dispatchRef.current = null;
+      return;
+    }
+    const settings = vault.data.settings;
+    const provider = makeProvider({ rpcUrl: settings.rpcUrl, chainId: settings.chainId, name: "configured" });
+    const signers = new Map<string, ReturnType<typeof makeSigner>>();
+    const addressById = new Map<string, string>();
+    for (const w of vault.data.tradingWallets) {
+      const s = makeSigner(w.privateKey, provider);
+      signers.set(w.id, s);
+      addressById.set(w.id, s.address);
+    }
+    if (vault.data.adminFundingWallet) {
+      const s = makeSigner(vault.data.adminFundingWallet.privateKey, provider);
+      signers.set("admin", s);
+      addressById.set("admin", s.address);
+    }
+    const tokenDecimalsCache = new Map<string, number>();
+    const tokenDecimals = async (addr: string): Promise<number> => {
+      const cached = tokenDecimalsCache.get(addr);
+      if (cached !== undefined) return cached;
+      const m = await getErc20Metadata(erc20Contract(addr, provider));
+      tokenDecimalsCache.set(addr, m.decimals);
+      return m.decimals;
+    };
+    const baseDispatch = makeDispatch({
+      provider,
+      getSigner: (id) => { const s = signers.get(id); if (!s) throw new Error(`no signer for ${id}`); return s; },
+      getAddressByWalletId: (id) => { const a = addressById.get(id); if (!a) throw new Error(`no address for ${id}`); return a; },
+      routerAddress: settings.routerAddress,
+      wethAddress: settings.wethAddress,
+      gasMultiplier: settings.gasMultiplier,
+      tokenDecimals,
+    });
+    dispatchRef.current = async (a: Action) => {
+      try {
+        const result = await baseDispatch(a);
+        await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "done", txHash: result.txHash });
+        return result;
+      } catch (err: unknown) {
+        const errorMessage = err instanceof Error ? err.message : String(err);
+        const errorCode = (err as { code?: string }).code ?? "UNKNOWN";
+        await loggerRef.current?.append({ ts: Date.now(), walletId: a.walletId, kind: a.kind, status: "failed", errorCode, errorMessage });
+        throw err;
+      }
+    };
+  }, [
+    vault.unlocked,
+    vault.data?.adminFundingWallet,
+    vault.data?.tradingWallets,
+    vault.data?.settings.rpcUrl,
+    vault.data?.settings.chainId,
+    vault.data?.settings.routerAddress,
+    vault.data?.settings.wethAddress,
+    vault.data?.settings.gasMultiplier,
+  ]);
 
   const enqueue = useCallback(async (a: NewAction) => {
     if (!queueRef.current) throw new Error("engine not ready");
