@@ -190,6 +190,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
       routerAddress,
       wethAddress,
       gasMultiplier: settings.gasMultiplier,
+      txTimeoutMs: settings.txTimeoutMs || 45_000,
       tokenDecimals,
     });
     dispatchRef.current = async (a: Action) => {
@@ -221,6 +222,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     vault.data?.settings.routerAddress,
     vault.data?.settings.wethAddress,
     vault.data?.settings.gasMultiplier,
+    vault.data?.settings.txTimeoutMs,
   ]);
 
   // Lifecycle 3: balance polling. Native (VLRX) for every wallet + active-token

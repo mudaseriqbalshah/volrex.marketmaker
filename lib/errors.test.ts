@@ -15,7 +15,12 @@ describe("classifyError", () => {
 
   it("returns network for connectivity errors", () => {
     expect(classifyError({ code: "NETWORK_ERROR" })).toBe(ErrorCode.Network);
-    expect(classifyError({ code: "TIMEOUT" })).toBe(ErrorCode.Network);
+    expect(classifyError({ code: "SERVER_ERROR" })).toBe(ErrorCode.Network);
+  });
+
+  it("returns timeout for our dispatch Promise.race timeouts", () => {
+    expect(classifyError({ code: "TIMEOUT" })).toBe(ErrorCode.Timeout);
+    expect(classifyError(new Error("broadcast did not complete within 60000ms"))).toBe(ErrorCode.Timeout);
   });
 
   it("returns revert for execution reverts", () => {

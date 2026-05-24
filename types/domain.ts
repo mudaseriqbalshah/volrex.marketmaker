@@ -25,6 +25,10 @@ export type Settings = {
   // Minimum gap between dispatches to the same wallet (ms). Lets the pool
   // settle between back-to-back swaps and avoids same-block competition.
   walletCooldownMs: number;
+  // Per-tx timeout (ms). If broadcast or confirmation takes longer than
+  // this, the dispatch throws TIMEOUT and the worker moves to the next
+  // action so a single stuck tx doesn't block a wallet forever.
+  txTimeoutMs: number;
 };
 
 export type VaultData = {
@@ -54,6 +58,7 @@ export const DEFAULT_SETTINGS: Settings = {
   balancePollMs: 15_000,
   autoLockIdleMs: 30 * 60 * 1000,
   walletCooldownMs: 3_000,
+  txTimeoutMs: 45_000,
 };
 
 export function emptyVault(): VaultData {

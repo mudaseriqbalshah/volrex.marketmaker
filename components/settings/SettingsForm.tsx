@@ -36,6 +36,7 @@ export function SettingsForm() {
       <Field label="Balance poll interval (ms)"><input type="number" value={s.balancePollMs} onChange={(e) => set("balancePollMs", Number(e.target.value))} className="input" /></Field>
       <Field label="Auto-lock idle (ms)"><input type="number" value={s.autoLockIdleMs} onChange={(e) => set("autoLockIdleMs", Number(e.target.value))} className="input" /></Field>
       <Field label="Per-wallet cooldown (ms)"><input type="number" value={s.walletCooldownMs} onChange={(e) => set("walletCooldownMs", Number(e.target.value))} className="input" /></Field>
+      <Field label="Tx timeout (ms) — abandon stuck tx after this"><input type="number" value={s.txTimeoutMs} onChange={(e) => set("txTimeoutMs", Number(e.target.value))} className="input" /></Field>
       <div className="lg:col-span-2 flex items-center gap-3">
         <button onClick={save} disabled={saving} className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded disabled:opacity-50">{saving ? "Saving…" : "Save"}</button>
         {msg && <span className="text-sm text-emerald-400">{msg}</span>}

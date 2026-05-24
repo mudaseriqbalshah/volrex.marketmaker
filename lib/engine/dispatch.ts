@@ -25,6 +25,10 @@ export type DispatchDeps = {
   routerAddress: string;
   wethAddress: string;
   gasMultiplier: number;
+  // Max ms to wait for broadcast + each phase of confirmation. If exceeded,
+  // a TIMEOUT error is thrown and the worker abandons this action and
+  // moves to the next one (after resyncing the nonce).
+  txTimeoutMs: number;
   tokenDecimals: (tokenAddress: string) => Promise<number>;
 };
 
@@ -39,72 +43,78 @@ export function makeDispatch(deps: DispatchDeps): (a: Action) => Promise<{ txHas
   return async (a: Action) => {
     const signer = deps.getSigner(a.walletId);
     const tracker = getNonceTracker(signer);
-    const nonce = await tracker.next();
-    const fee = await deps.provider.getFeeData();
-    const gasPrice = fee.gasPrice ?? 1n;
-    const gasMultiplier = deps.gasMultiplier;
+    try {
+      const nonce = await tracker.next();
+      const fee = await deps.provider.getFeeData();
+      const gasPrice = fee.gasPrice ?? 1n;
+      const gasMultiplier = deps.gasMultiplier;
+      const txTimeoutMs = deps.txTimeoutMs;
 
-    switch (a.kind) {
-      case "TransferETH":
-      case "TransferBackETH": {
-        const to = deps.getAddressByWalletId(a.params.toWalletId);
-        const amount = a.params.amount === "all-minus-buffer"
-          ? (await deps.provider.getBalance(signer.address)) - parseEther(a.params.gasBuffer ?? "0.001")
-          : parseEther(a.params.amount);
-        return executeTransferETH({ signer, nonce, gasPrice, gasMultiplier }, { to, amount });
-      }
-      case "TransferToken":
-      case "TransferBackToken": {
-        const to = deps.getAddressByWalletId(a.params.toWalletId);
-        const decimals = await deps.tokenDecimals(a.params.tokenAddress);
-        const amount = parseUnits(a.params.amount, decimals);
-        const makeErc20 = (addr: string) => erc20Contract(addr, signer);
-        return executeTransferToken({ signer, nonce, gasPrice, gasMultiplier, makeErc20 }, { tokenAddress: a.params.tokenAddress, to, amount });
-      }
-      case "Approve": {
-        const makeErc20 = (addr: string) => erc20Contract(addr, signer);
-        return executeApprove({ signer, nonce, gasPrice, gasMultiplier, makeErc20 }, { tokenAddress: a.params.tokenAddress, spender: a.params.spender, amount: BigInt(a.params.amount) });
-      }
-      case "Buy": {
-        const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
-        // Resolve the actual amount. For percentage mode, read native balance
-        // at dispatch time and reserve some for gas before applying the %.
-        let amountNative: bigint;
-        if (a.params.amountMode === "percentage") {
-          const balance = await deps.provider.getBalance(signer.address);
-          const reserve = parseEther(a.params.gasReserve ?? "0.001");
-          const spendable = balance > reserve ? balance - reserve : 0n;
-          amountNative = applyPercentage(spendable, a.params.amountNative);
-          if (amountNative === 0n) throw new Error(`Buy %: not enough native balance after gas reserve (have ${balance}, reserve ${reserve})`);
-        } else {
-          amountNative = parseEther(a.params.amountNative);
+      switch (a.kind) {
+        case "TransferETH":
+        case "TransferBackETH": {
+          const to = deps.getAddressByWalletId(a.params.toWalletId);
+          const amount = a.params.amount === "all-minus-buffer"
+            ? (await deps.provider.getBalance(signer.address)) - parseEther(a.params.gasBuffer ?? "0.001")
+            : parseEther(a.params.amount);
+          return await executeTransferETH({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs }, { to, amount });
         }
-        return executeBuy({ signer, nonce, gasPrice, gasMultiplier, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative, slippageBps: a.params.slippageBps });
-      }
-      case "Sell": {
-        const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
-        const tokenC = erc20Contract(a.params.tokenAddress, signer);
-        const decimals = await deps.tokenDecimals(a.params.tokenAddress);
-        // Resolve the actual token amount. For percentage mode, read token
-        // balance at dispatch time and apply the percentage.
-        let amountToken: bigint;
-        if (a.params.amountMode === "percentage") {
-          const balance = await getErc20Balance(tokenC, signer.address);
-          amountToken = applyPercentage(balance, a.params.amountToken);
-          if (amountToken === 0n) throw new Error(`Sell %: wallet has no token balance for ${a.params.tokenAddress}`);
-        } else {
-          amountToken = parseUnits(a.params.amountToken, decimals);
-        }
-        const allowance = await getErc20Allowance(tokenC, signer.address, deps.routerAddress);
-
-        let sellNonce = nonce;
-        if (allowance < amountToken) {
+        case "TransferToken":
+        case "TransferBackToken": {
+          const to = deps.getAddressByWalletId(a.params.toWalletId);
+          const decimals = await deps.tokenDecimals(a.params.tokenAddress);
+          const amount = parseUnits(a.params.amount, decimals);
           const makeErc20 = (addr: string) => erc20Contract(addr, signer);
-          await executeApprove({ signer, nonce, gasPrice, gasMultiplier, makeErc20 }, { tokenAddress: a.params.tokenAddress, spender: deps.routerAddress, amount: (1n << 256n) - 1n });
-          sellNonce = await tracker.next();
+          return await executeTransferToken({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, makeErc20 }, { tokenAddress: a.params.tokenAddress, to, amount });
         }
-        return executeSell({ signer, nonce: sellNonce, gasPrice, gasMultiplier, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountToken, slippageBps: a.params.slippageBps });
+        case "Approve": {
+          const makeErc20 = (addr: string) => erc20Contract(addr, signer);
+          return await executeApprove({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, makeErc20 }, { tokenAddress: a.params.tokenAddress, spender: a.params.spender, amount: BigInt(a.params.amount) });
+        }
+        case "Buy": {
+          const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
+          let amountNative: bigint;
+          if (a.params.amountMode === "percentage") {
+            const balance = await deps.provider.getBalance(signer.address);
+            const reserve = parseEther(a.params.gasReserve ?? "0.001");
+            const spendable = balance > reserve ? balance - reserve : 0n;
+            amountNative = applyPercentage(spendable, a.params.amountNative);
+            if (amountNative === 0n) throw new Error(`Buy %: not enough native balance after gas reserve (have ${balance}, reserve ${reserve})`);
+          } else {
+            amountNative = parseEther(a.params.amountNative);
+          }
+          return await executeBuy({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative, slippageBps: a.params.slippageBps });
+        }
+        case "Sell": {
+          const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
+          const tokenC = erc20Contract(a.params.tokenAddress, signer);
+          const decimals = await deps.tokenDecimals(a.params.tokenAddress);
+          let amountToken: bigint;
+          if (a.params.amountMode === "percentage") {
+            const balance = await getErc20Balance(tokenC, signer.address);
+            amountToken = applyPercentage(balance, a.params.amountToken);
+            if (amountToken === 0n) throw new Error(`Sell %: wallet has no token balance for ${a.params.tokenAddress}`);
+          } else {
+            amountToken = parseUnits(a.params.amountToken, decimals);
+          }
+          const allowance = await getErc20Allowance(tokenC, signer.address, deps.routerAddress);
+
+          let sellNonce = nonce;
+          if (allowance < amountToken) {
+            const makeErc20 = (addr: string) => erc20Contract(addr, signer);
+            await executeApprove({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, makeErc20 }, { tokenAddress: a.params.tokenAddress, spender: deps.routerAddress, amount: (1n << 256n) - 1n });
+            sellNonce = await tracker.next();
+          }
+          return await executeSell({ signer, nonce: sellNonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountToken, slippageBps: a.params.slippageBps });
+        }
       }
+    } catch (err) {
+      // Any failure (timeout, nonce mismatch, revert, network) might leave
+      // our local nonce out of sync with the chain. Resync so the next
+      // dispatch from this wallet fetches the real pending nonce instead
+      // of incrementing from a stale local value.
+      await tracker.resync();
+      throw err;
     }
   };
 }
