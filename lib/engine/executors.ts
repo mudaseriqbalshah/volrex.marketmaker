@@ -47,6 +47,30 @@ async function sendAndWait(signer: Wallet, tx: object, timeoutMs: number = DEFAU
   return { txHash: response.hash, receiptStatus: receipt?.status ?? 0 };
 }
 
+// Pre-flight simulation: ask the node to run the tx against current state
+// without persisting. If it would revert, throw with the reason so we never
+// broadcast a doomed transaction. This catches slippage failures, allowance
+// problems, paused contracts, etc. before they cost gas.
+async function preflight(signer: Wallet, tx: object): Promise<void> {
+  if (!signer.provider) return; // can't simulate without a provider
+  const sim = { ...tx, from: signer.address };
+  // Drop fields that confuse eth_call (nonce/gasPrice are irrelevant for a
+  // state-less simulation; some RPCs reject if they are present).
+  delete (sim as { nonce?: unknown }).nonce;
+  delete (sim as { gasPrice?: unknown }).gasPrice;
+  try {
+    await signer.provider.call(sim);
+  } catch (err) {
+    const e = err as { reason?: string; shortMessage?: string; message?: string };
+    const reason = e.reason ?? e.shortMessage ?? e.message ?? "preflight reverted";
+    throw Object.assign(new Error(`preflight reverted: ${reason}`), {
+      code: "CALL_EXCEPTION",
+      reason,
+      preflight: true,
+    });
+  }
+}
+
 export async function executeTransferETH(ctx: ExecCtx, p: { to: string; amount: bigint }): ExecResultPromise {
   return sendAndWait(ctx.signer, {
     to: p.to,
@@ -93,12 +117,14 @@ export async function executeBuy(ctx: RouterCtx, p: { tokenAddress: string; amou
   const populated = await ctx.router["swapExactETHForTokensSupportingFeeOnTransferTokens"]!.populateTransaction(
     minOut, path, ctx.signer.address, deadlineFromNow(120),
   );
-  return sendAndWait(ctx.signer, {
+  const fullTx = {
     ...populated,
     value: p.amountNative,
     nonce: ctx.nonce,
     gasPrice: bumpGas(ctx.gasPrice, ctx.gasMultiplier),
-  }, ctx.txTimeoutMs);
+  };
+  await preflight(ctx.signer, fullTx);
+  return sendAndWait(ctx.signer, fullTx, ctx.txTimeoutMs);
 }
 
 export async function executeSell(ctx: RouterCtx, p: { tokenAddress: string; amountToken: bigint; slippageBps: number }): ExecResultPromise {
@@ -109,9 +135,11 @@ export async function executeSell(ctx: RouterCtx, p: { tokenAddress: string; amo
   const populated = await ctx.router["swapExactTokensForETHSupportingFeeOnTransferTokens"]!.populateTransaction(
     p.amountToken, minOut, path, ctx.signer.address, deadlineFromNow(120),
   );
-  return sendAndWait(ctx.signer, {
+  const fullTx = {
     ...populated,
     nonce: ctx.nonce,
     gasPrice: bumpGas(ctx.gasPrice, ctx.gasMultiplier),
-  }, ctx.txTimeoutMs);
+  };
+  await preflight(ctx.signer, fullTx);
+  return sendAndWait(ctx.signer, fullTx, ctx.txTimeoutMs);
 }
