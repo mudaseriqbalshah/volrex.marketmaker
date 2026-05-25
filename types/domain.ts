@@ -14,7 +14,13 @@ export type TokenConfig = {
 };
 
 export type Settings = {
+  // Legacy single RPC URL. Kept for backward-compat with vaults saved
+  // before rpcUrls existed; new code reads rpcUrls first and falls back
+  // to [rpcUrl] if it's empty.
   rpcUrl: string;
+  // List of RPC URLs to round-robin across for load balancing + fallback.
+  // Calls are distributed across these on each invocation.
+  rpcUrls: string[];
   chainId: number;
   routerAddress: string;
   wethAddress: string;
@@ -22,12 +28,7 @@ export type Settings = {
   gasMultiplier: number;
   balancePollMs: number;
   autoLockIdleMs: number;
-  // Minimum gap between dispatches to the same wallet (ms). Lets the pool
-  // settle between back-to-back swaps and avoids same-block competition.
   walletCooldownMs: number;
-  // Per-tx timeout (ms). If broadcast or confirmation takes longer than
-  // this, the dispatch throws TIMEOUT and the worker moves to the next
-  // action so a single stuck tx doesn't block a wallet forever.
   txTimeoutMs: number;
 };
 
@@ -44,12 +45,26 @@ export type VaultData = {
 // settings. Existing vaults persist whatever was saved — EngineContext
 // applies env fallback at dispatch time to cover the migration case.
 const ENV_RPC = process.env.NEXT_PUBLIC_RPC_URL ?? "";
+// NEXT_PUBLIC_RPC_URLS can be a comma-separated list for multi-node setups.
+// Falls back to NEXT_PUBLIC_RPC_URL (single) if not set.
+const ENV_RPC_URLS = process.env.NEXT_PUBLIC_RPC_URLS ?? "";
 const ENV_CHAIN_ID = process.env.NEXT_PUBLIC_CHAIN_ID ?? "";
 const ENV_ROUTER = process.env.NEXT_PUBLIC_ROUTER_ADDRESS ?? "";
 const ENV_WETH = process.env.NEXT_PUBLIC_WETH_ADDRESS ?? "";
 
+function parseUrlList(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+const DEFAULT_RPC = ENV_RPC || "https://rpc.volrex.network/";
+const DEFAULT_RPC_URLS = parseUrlList(ENV_RPC_URLS);
+
 export const DEFAULT_SETTINGS: Settings = {
-  rpcUrl: ENV_RPC || "https://rpc.volrex.network/",
+  rpcUrl: DEFAULT_RPC,
+  rpcUrls: DEFAULT_RPC_URLS.length > 0 ? DEFAULT_RPC_URLS : [DEFAULT_RPC],
   chainId: Number(ENV_CHAIN_ID) || 1378,
   routerAddress: ENV_ROUTER,
   wethAddress: ENV_WETH,
@@ -60,6 +75,15 @@ export const DEFAULT_SETTINGS: Settings = {
   walletCooldownMs: 3_000,
   txTimeoutMs: 45_000,
 };
+
+// Resolve the effective RPC URL list from a possibly-stale Settings object.
+// Used by callers that need to handle old vaults missing rpcUrls.
+export function effectiveRpcUrls(s: Pick<Settings, "rpcUrls" | "rpcUrl">): string[] {
+  const fromArray = (s.rpcUrls ?? []).map((u) => u.trim()).filter(Boolean);
+  if (fromArray.length > 0) return fromArray;
+  if (s.rpcUrl && s.rpcUrl.trim()) return [s.rpcUrl.trim()];
+  return [];
+}
 
 export function emptyVault(): VaultData {
   return {

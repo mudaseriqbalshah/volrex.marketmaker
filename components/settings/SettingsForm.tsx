@@ -27,7 +27,15 @@ export function SettingsForm() {
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 max-w-3xl">
-      <Field label="RPC URL"><input value={s.rpcUrl} onChange={(e) => set("rpcUrl", e.target.value)} className="input" /></Field>
+      <Field label="RPC URLs (one per line, round-robined)">
+        <textarea
+          value={(s.rpcUrls ?? []).join("\n")}
+          onChange={(e) => set("rpcUrls", e.target.value.split("\n").map((u) => u.trim()).filter(Boolean))}
+          rows={4}
+          placeholder="https://rpc1.example.com\nhttps://rpc2.example.com"
+          className="input font-mono text-xs"
+        />
+      </Field>
       <Field label="Chain ID"><input type="number" value={s.chainId} onChange={(e) => set("chainId", Number(e.target.value))} className="input" /></Field>
       <Field label="Router address"><input value={s.routerAddress} onChange={(e) => set("routerAddress", e.target.value)} className="input font-mono text-sm" /></Field>
       <Field label="WETH address"><input value={s.wethAddress} onChange={(e) => set("wethAddress", e.target.value)} className="input font-mono text-sm" /></Field>
