@@ -2,10 +2,12 @@
 
 import { useState } from "react";
 import { useEngine } from "@/contexts/EngineContext";
+import { useActivity } from "@/contexts/ActivityContext";
 import { ActionList } from "@/components/actions/ActionList";
 
 export default function ActionsPage() {
   const engine = useEngine();
+  const activity = useActivity();
   const [msg, setMsg] = useState<string | null>(null);
 
   const counts = engine.queueSnapshot.reduce(
@@ -14,28 +16,39 @@ export default function ActionsPage() {
   );
 
   async function resetStuck() {
-    const n = await engine.resetStuckActions();
+    const n = await activity.track("Resetting stuck actions", () => engine.resetStuckActions());
     setMsg(n === 0 ? "No stuck actions found." : `Reset ${n} action${n === 1 ? "" : "s"} from running → queued.`);
     setTimeout(() => setMsg(null), 3000);
   }
 
   async function cancelAllFailed() {
     const failed = engine.queueSnapshot.filter((a) => a.status === "failed");
-    for (const a of failed) {
-      await engine.removeFromQueue(a.id);
-    }
+    await activity.track(`Clearing ${failed.length} failed`, async () => {
+      for (const a of failed) await engine.removeFromQueue(a.id);
+    });
     setMsg(`Cleared ${failed.length} failed item${failed.length === 1 ? "" : "s"}.`);
     setTimeout(() => setMsg(null), 3000);
   }
 
   async function cancelAllQueued() {
     const queued = engine.queueSnapshot.filter((a) => a.status === "queued");
-    for (const a of queued) {
-      await engine.removeFromQueue(a.id);
-    }
+    await activity.track(`Clearing ${queued.length} queued`, async () => {
+      for (const a of queued) await engine.removeFromQueue(a.id);
+    });
     setMsg(`Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}.`);
     setTimeout(() => setMsg(null), 3000);
   }
+
+  async function clearAll() {
+    const total = engine.queueSnapshot.length;
+    if (total === 0) return;
+    if (!confirm(`Remove ALL ${total} action${total === 1 ? "" : "s"} from the queue? This cannot be undone.`)) return;
+    const n = await activity.track(`Clearing all ${total} actions`, () => engine.clearAllActions());
+    setMsg(`Removed ${n} action${n === 1 ? "" : "s"} from the queue.`);
+    setTimeout(() => setMsg(null), 3000);
+  }
+
+  const total = engine.queueSnapshot.length;
 
   return (
     <div className="space-y-4">
@@ -49,7 +62,7 @@ export default function ActionsPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <button
           onClick={resetStuck}
           disabled={(counts.running ?? 0) === 0}
@@ -71,6 +84,14 @@ export default function ActionsPage() {
           className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 rounded disabled:opacity-40"
         >
           Clear queued ({counts.queued ?? 0})
+        </button>
+        <button
+          onClick={clearAll}
+          disabled={total === 0}
+          className="px-3 py-1.5 text-xs bg-rose-700 hover:bg-rose-600 rounded disabled:opacity-40"
+          title="Remove every action from the queue regardless of status."
+        >
+          Clear all ({total})
         </button>
         {msg && <span className="text-xs text-emerald-400 ml-2">{msg}</span>}
       </div>

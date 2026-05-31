@@ -3,15 +3,20 @@
 import { useState } from "react";
 import { useEngine } from "@/contexts/EngineContext";
 import { useVault } from "@/contexts/VaultContext";
+import { useActivity } from "@/contexts/ActivityContext";
 import { AddressDisplay } from "@/components/common/AddressDisplay";
 import { BalanceDisplay } from "@/components/common/BalanceDisplay";
+import { WalletSelector, resolveWalletIds, type WalletSelection } from "@/components/common/WalletSelector";
 import { pickRandomInRange } from "@/lib/range";
+import type { NewAction } from "@/lib/engine/types";
 
 export function FundingCard() {
   const vault = useVault();
   const engine = useEngine();
+  const activity = useActivity();
   const [minAmount, setMinAmount] = useState("0.005");
   const [maxAmount, setMaxAmount] = useState("0.02");
+  const [selection, setSelection] = useState<WalletSelection>({ mode: "all" });
 
   if (!vault.data?.adminFundingWallet) {
     return (
@@ -21,18 +26,27 @@ export function FundingCard() {
     );
   }
 
+  const wallets = vault.data.tradingWallets;
+  const selectedIds = resolveWalletIds(selection, wallets);
+
   async function distribute() {
-    if (!vault.data) return;
-    for (const w of vault.data.tradingWallets) {
-      const amount = pickRandomInRange(minAmount, maxAmount);
-      await engine.enqueue({ kind: "TransferETH", walletId: "admin", params: { toWalletId: w.id, amount } });
-    }
+    if (selectedIds.length === 0) return;
+    const actions: NewAction[] = selectedIds.map((toWalletId) => ({
+      kind: "TransferETH" as const,
+      walletId: "admin",
+      params: { toWalletId, amount: pickRandomInRange(minAmount, maxAmount) },
+    }));
+    await activity.track(`Distributing to ${actions.length} wallets`, () => engine.enqueueBatch(actions));
   }
+
   async function collect() {
-    if (!vault.data) return;
-    for (const w of vault.data.tradingWallets) {
-      await engine.enqueue({ kind: "TransferBackETH", walletId: w.id, params: { toWalletId: "admin", amount: "all-minus-buffer", gasBuffer: "0.001" } });
-    }
+    if (selectedIds.length === 0) return;
+    const actions: NewAction[] = selectedIds.map((fromWalletId) => ({
+      kind: "TransferBackETH" as const,
+      walletId: fromWalletId,
+      params: { toWalletId: "admin", amount: "all-minus-buffer" as const, gasBuffer: "0.001" },
+    }));
+    await activity.track(`Collecting from ${actions.length} wallets`, () => engine.enqueueBatch(actions));
   }
 
   const activeToken = vault.data.tokens.find((t) => t.address === vault.data?.activeTokenAddress);
@@ -49,7 +63,11 @@ export function FundingCard() {
         )}
       </div>
 
-      <label className="block text-sm mt-3 text-slate-400">Amount per wallet (native) — random in range</label>
+      <div className="mt-3">
+        <WalletSelector wallets={wallets} value={selection} onChange={setSelection} />
+      </div>
+
+      <label className="block text-sm mt-3 text-slate-400">Amount per wallet (VLRX) — random in range</label>
       <div className="grid grid-cols-2 gap-2 mt-1">
         <input
           value={minAmount}
@@ -66,13 +84,25 @@ export function FundingCard() {
       </div>
       <div className="text-xs text-slate-500 mt-1">
         {sameValue
-          ? `Each Distribute sends exactly ${minAmount} VLRX per wallet.`
-          : `Each Distribute picks a fresh random amount between ${minAmount} and ${maxAmount} VLRX per wallet.`}
+          ? `Each Distribute sends exactly ${minAmount} VLRX to ${selectedIds.length} wallet${selectedIds.length === 1 ? "" : "s"}.`
+          : `Each Distribute picks a fresh random amount between ${minAmount} and ${maxAmount} VLRX for ${selectedIds.length} wallet${selectedIds.length === 1 ? "" : "s"}.`}
       </div>
 
       <div className="mt-3 flex gap-2">
-        <button onClick={distribute} className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm">Distribute</button>
-        <button onClick={collect} className="px-3 py-2 bg-slate-800 hover:bg-slate-700 rounded text-sm">Collect</button>
+        <button
+          onClick={distribute}
+          disabled={selectedIds.length === 0}
+          className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 rounded text-sm"
+        >
+          Distribute ({selectedIds.length})
+        </button>
+        <button
+          onClick={collect}
+          disabled={selectedIds.length === 0}
+          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 rounded text-sm"
+        >
+          Collect ({selectedIds.length})
+        </button>
       </div>
     </div>
   );

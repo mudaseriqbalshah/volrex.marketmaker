@@ -2,6 +2,7 @@ import "./globals.css";
 import type { ReactNode } from "react";
 import { VaultProvider } from "@/contexts/VaultContext";
 import { EngineProvider } from "@/contexts/EngineContext";
+import { ActivityProvider } from "@/contexts/ActivityContext";
 import { SiweGate } from "@/components/auth/SiweGate";
 import { VaultGate } from "@/components/auth/VaultGate";
 import { TopBar } from "@/components/common/TopBar";
@@ -16,15 +17,17 @@ export default function RootLayout({ children }: { children: ReactNode }) {
         <SiweGate>
           <VaultProvider>
             <VaultGate>
-              <EngineProvider>
-                <div className="flex flex-col min-h-screen">
-                  <TopBar />
-                  <div className="flex flex-1">
-                    <Sidebar />
-                    <main className="flex-1 p-6">{children}</main>
+              <ActivityProvider>
+                <EngineProvider>
+                  <div className="flex flex-col min-h-screen">
+                    <TopBar />
+                    <div className="flex flex-1">
+                      <Sidebar />
+                      <main className="flex-1 p-6">{children}</main>
+                    </div>
                   </div>
-                </div>
-              </EngineProvider>
+                </EngineProvider>
+              </ActivityProvider>
             </VaultGate>
           </VaultProvider>
         </SiweGate>

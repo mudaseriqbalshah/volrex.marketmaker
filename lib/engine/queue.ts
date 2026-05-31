@@ -30,6 +30,31 @@ export class ActionQueue {
     return a;
   }
 
+  // Bulk-add many actions with a single persist call. Much faster than
+  // awaiting enqueue() in a loop for large batches (one encrypt + write
+  // instead of N).
+  async enqueueBatch(nas: NewAction[]): Promise<Action[]> {
+    if (nas.length === 0) return [];
+    const now = Date.now();
+    const added: Action[] = nas.map((na) => ({
+      ...(na as object),
+      id: newId(),
+      createdAt: now,
+      status: "queued" as ActionStatus,
+      attempts: 0,
+    } as Action));
+    for (const a of added) this.items.set(a.id, a);
+    await this.flush();
+    return added;
+  }
+
+  // Remove every action regardless of status. Used by the "Clear all"
+  // button on the Actions page when the user wants to start fresh.
+  async clear(): Promise<void> {
+    this.items.clear();
+    await this.flush();
+  }
+
   private byWallet(walletId: string): Action[] {
     return [...this.items.values()].filter((a) => a.walletId === walletId);
   }

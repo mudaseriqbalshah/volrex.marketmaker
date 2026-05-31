@@ -23,6 +23,7 @@ type VaultApi = VaultState & {
   removeToken: (addr: string) => Promise<void>;
   setAdminFundingWallet: (w: { address: string; privateKey: string } | null) => Promise<void>;
   addTradingWallet: (w: TradingWallet) => Promise<void>;
+  addTradingWallets: (ws: TradingWallet[]) => Promise<void>;
   updateTradingWallet: (id: string, patch: Partial<TradingWallet>) => Promise<void>;
   removeTradingWallet: (id: string) => Promise<void>;
 };
@@ -91,6 +92,7 @@ export function VaultProvider({ children }: { children: ReactNode }) {
     removeToken: (addr) => mutate((d) => ({ ...d, tokens: d.tokens.filter((t) => t.address !== addr), activeTokenAddress: d.activeTokenAddress === addr ? null : d.activeTokenAddress })),
     setAdminFundingWallet: (w) => mutate((d) => ({ ...d, adminFundingWallet: w })),
     addTradingWallet: (w) => mutate((d) => ({ ...d, tradingWallets: [...d.tradingWallets, w] })),
+    addTradingWallets: (ws) => mutate((d) => ({ ...d, tradingWallets: [...d.tradingWallets, ...ws] })),
     updateTradingWallet: (id, patch) => mutate((d) => ({ ...d, tradingWallets: d.tradingWallets.map((w) => (w.id === id ? { ...w, ...patch } : w)) })),
     removeTradingWallet: (id) => mutate((d) => ({ ...d, tradingWallets: d.tradingWallets.filter((w) => w.id !== id) })),
   }), [state, initialize, unlock, lock, wipe, mutate]);

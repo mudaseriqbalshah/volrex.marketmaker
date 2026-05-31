@@ -39,7 +39,11 @@ type EngineApi = {
   drain: () => void;
   queueSnapshot: Action[];
   enqueue: (a: NewAction) => Promise<Action>;
+  // Bulk-enqueue: one atomic persist call regardless of array size.
+  enqueueBatch: (actions: NewAction[]) => Promise<Action[]>;
   removeFromQueue: (id: string) => Promise<void>;
+  // Wipe every action regardless of status.
+  clearAllActions: () => Promise<number>;
   logs: LogEntry[];
   nativeBalances: Record<string, bigint>;
   tokenBalances: Record<string, bigint>;
@@ -328,6 +332,19 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     return item;
   }, []);
 
+  const enqueueBatch = useCallback(async (actions: NewAction[]) => {
+    if (!queueRef.current) throw new Error("engine not ready");
+    return queueRef.current.enqueueBatch(actions);
+  }, []);
+
+  const clearAllActions = useCallback(async () => {
+    const queue = queueRef.current;
+    if (!queue) return 0;
+    const n = queue.all().length;
+    await queue.clear();
+    return n;
+  }, []);
+
   const start = useCallback(() => {
     workerRef.current?.start(); workerRef.current?.resume();
     setRunning(true);
@@ -380,9 +397,10 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api: EngineApi = useMemo(() => ({
-    mode, setMode, running, start, stop, drain, queueSnapshot: snapshot, enqueue, removeFromQueue, logs,
-    nativeBalances, tokenBalances, resetStuckActions,
-  }), [mode, running, snapshot, start, stop, drain, enqueue, removeFromQueue, logs, nativeBalances, tokenBalances, resetStuckActions]);
+    mode, setMode, running, start, stop, drain, queueSnapshot: snapshot,
+    enqueue, enqueueBatch, removeFromQueue, clearAllActions,
+    logs, nativeBalances, tokenBalances, resetStuckActions,
+  }), [mode, running, snapshot, start, stop, drain, enqueue, enqueueBatch, removeFromQueue, clearAllActions, logs, nativeBalances, tokenBalances, resetStuckActions]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }

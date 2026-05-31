@@ -3,16 +3,18 @@
 import { useState } from "react";
 import { useVault } from "@/contexts/VaultContext";
 import { useEngine } from "@/contexts/EngineContext";
+import { useActivity } from "@/contexts/ActivityContext";
+import { WalletSelector, resolveWalletIds, type WalletSelection } from "@/components/common/WalletSelector";
 import { pickRandomInRange } from "@/lib/range";
-
-const ALL_WALLETS = "__all__";
+import type { NewAction } from "@/lib/engine/types";
 
 type AmountMode = "absolute" | "percentage";
 
 export function QuickFire() {
   const vault = useVault();
   const engine = useEngine();
-  const [walletId, setWalletId] = useState<string>("");
+  const activity = useActivity();
+  const [selection, setSelection] = useState<WalletSelection>({ mode: "all" });
   const [side, setSide] = useState<"Buy" | "Sell" | "Alternate">("Buy");
   const [amountMode, setAmountMode] = useState<AmountMode>("absolute");
   const [minAmount, setMinAmount] = useState("0.005");
@@ -21,13 +23,10 @@ export function QuickFire() {
 
   const token = vault.data?.tokens.find((t) => t.address === vault.data?.activeTokenAddress);
   const tradingWallets = vault.data?.tradingWallets ?? [];
+  const selectedIds = resolveWalletIds(selection, tradingWallets);
 
   async function fire() {
-    if (!walletId || !token || count < 1) return;
-    const targetWalletIds = walletId === ALL_WALLETS
-      ? tradingWallets.map((w) => w.id)
-      : [walletId];
-    if (targetWalletIds.length === 0) return;
+    if (!token || count < 1 || selectedIds.length === 0) return;
 
     const kindAt = (i: number): "Buy" | "Sell" => {
       if (side === "Buy") return "Buy";
@@ -35,13 +34,18 @@ export function QuickFire() {
       return i % 2 === 0 ? "Buy" : "Sell";
     };
 
+    // Build the full action list first, then bulk-enqueue in one persist
+    // call. Much faster for large counts AND lets the UI run other
+    // operations in parallel (the user can click again to add another
+    // batch while this one is being persisted).
+    const actions: NewAction[] = [];
     let i = 0;
     for (let r = 0; r < count; r++) {
-      for (const id of targetWalletIds) {
+      for (const id of selectedIds) {
         const kind = kindAt(i++);
         const amount = pickRandomInRange(minAmount, maxAmount);
         if (kind === "Buy") {
-          await engine.enqueue({
+          actions.push({
             kind: "Buy",
             walletId: id,
             params: {
@@ -52,7 +56,7 @@ export function QuickFire() {
             },
           });
         } else {
-          await engine.enqueue({
+          actions.push({
             kind: "Sell",
             walletId: id,
             params: {
@@ -65,6 +69,10 @@ export function QuickFire() {
         }
       }
     }
+
+    await activity.track(`Queueing ${actions.length} ${side.toLowerCase()} action${actions.length === 1 ? "" : "s"}`, () =>
+      engine.enqueueBatch(actions),
+    );
   }
 
   function switchMode(mode: AmountMode) {
@@ -78,7 +86,7 @@ export function QuickFire() {
     }
   }
 
-  const totalActions = walletId === ALL_WALLETS ? tradingWallets.length * count : count;
+  const totalActions = selectedIds.length * count;
   const buttonLabel = totalActions <= 1 ? "Send" : `Send ${totalActions} actions`;
   const sameRange = minAmount === maxAmount;
   const unitLabel = amountMode === "percentage" ? "%" : "VLRX/token";
@@ -86,7 +94,7 @@ export function QuickFire() {
   const helperText = sameRange
     ? amountMode === "percentage"
       ? `Each action uses exactly ${minAmount}% of the wallet's ${side === "Sell" ? "token" : "native"} balance.`
-      : `Each action sends exactly ${minAmount}.`
+      : `Each action uses exactly ${minAmount}.`
     : amountMode === "percentage"
       ? `Each action picks a fresh random % between ${minAmount}% and ${maxAmount}% of the wallet's ${side === "Sell" ? "token" : "native"} balance.`
       : `Each action picks a fresh random amount between ${minAmount} and ${maxAmount}.`;
@@ -112,23 +120,16 @@ export function QuickFire() {
         </button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 mt-3">
-        <select
-          value={walletId}
-          onChange={(e) => setWalletId(e.target.value)}
-          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded"
-        >
-          <option value="">— wallet —</option>
-          <option value={ALL_WALLETS}>All wallets ({tradingWallets.length})</option>
-          {tradingWallets.map((w) => (
-            <option key={w.id} value={w.id}>{w.label}</option>
-          ))}
-        </select>
+      <div className="mt-3">
+        <WalletSelector wallets={tradingWallets} value={selection} onChange={setSelection} />
+      </div>
 
+      <div className="mt-3">
+        <label className="block text-xs text-slate-400">Side</label>
         <select
           value={side}
           onChange={(e) => setSide(e.target.value as "Buy" | "Sell" | "Alternate")}
-          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded"
+          className="w-full mt-1 px-3 py-2 bg-slate-950 border border-slate-700 rounded text-sm"
         >
           <option value="Buy">Buy</option>
           <option value="Sell">Sell</option>
@@ -144,13 +145,13 @@ export function QuickFire() {
           value={minAmount}
           onChange={(e) => setMinAmount(e.target.value)}
           placeholder="Min"
-          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded"
+          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded text-sm"
         />
         <input
           value={maxAmount}
           onChange={(e) => setMaxAmount(e.target.value)}
           placeholder="Max"
-          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded"
+          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded text-sm"
         />
         <input
           type="number"
@@ -158,23 +159,21 @@ export function QuickFire() {
           value={count}
           onChange={(e) => setCount(Math.max(1, Number(e.target.value)))}
           placeholder="Count"
-          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded"
+          className="px-3 py-2 bg-slate-950 border border-slate-700 rounded text-sm"
           title="Number of repetitions per wallet"
         />
       </div>
 
       <div className="mt-2 text-xs text-slate-500 space-y-1">
         <div>
-          {walletId === ALL_WALLETS
-            ? `${count} × ${tradingWallets.length} wallets = ${totalActions} action${totalActions === 1 ? "" : "s"} queued`
-            : `${count} action${count === 1 ? "" : "s"} queued from this wallet`}
+          {selectedIds.length} wallet{selectedIds.length === 1 ? "" : "s"} × {count} reps = {totalActions} action{totalActions === 1 ? "" : "s"} queued
         </div>
         <div className="text-slate-400">{helperText}</div>
       </div>
 
       <button
         onClick={fire}
-        disabled={!walletId || !token || count < 1}
+        disabled={!token || count < 1 || selectedIds.length === 0}
         className="mt-3 px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm disabled:opacity-50"
       >
         {buttonLabel}
