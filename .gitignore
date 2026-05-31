@@ -5,3 +5,6 @@ node_modules
 .DS_Store
 coverage
 tsconfig.tsbuildinfo
+mm-state/
+mm.config.yaml
+mm.log

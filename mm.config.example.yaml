@@ -1,0 +1,59 @@
+# Market Maker CLI configuration
+# Copy this to mm.config.yaml and fill in the secrets.
+# WARNING: this file holds private keys in plain text — chmod 600 it.
+
+chain:
+  chainId: 1378
+  rpcUrls:
+    - https://rpc.volrex.network/
+    # - https://rpc2.volrex.network/   # add more for round-robin
+  routerAddress: "0x4C49ADa169889Daeef635268640cDef00E40dE81"
+  wethAddress:   "0x342dccb6d50Fe91468B6219C4e126E117E40E6F0"
+
+fundingWallet:
+  privateKey: "0xPUT_ADMIN_PRIVATE_KEY_HERE"
+
+tradingWallets:
+  # Generate with: npx tsx cli/mm.ts gen-wallets --wallet-count 10
+  # - { label: w001, privateKey: "0x..." }
+
+token:
+  address: "0xPUT_TOKEN_ADDRESS_HERE"
+  symbol: TST
+  decimals: 18
+  defaultSlippageBps: 500       # 5% — bump higher on thin pools
+
+engine:
+  maxConcurrent: 5              # how many wallets dispatch in parallel
+  gasMultiplier: 1.1            # multiply RPC-suggested gasPrice
+  walletCooldownMs: 3000        # min ms between back-to-back dispatches per wallet
+  txTimeoutMs: 45000            # abandon tx if broadcast/wait exceeds this
+
+# Operation describes what `mm run` does. Override individual fields
+# with CLI flags: --range, --side, --count, --min, --max, etc.
+operation:
+  type: fire                    # fire | scheduler | distribute | collect | balances | gen-wallets | clear
+
+  # For fire / scheduler / distribute / collect:
+  walletRange: [1, 5]           # 1-based, inclusive; or "all"
+
+  # For fire:
+  side: alternate               # buy | sell | alternate
+  amountMode: absolute          # absolute (VLRX/token literal) | percentage (of wallet balance)
+  amountMin: "0.005"
+  amountMax: "0.02"
+  count: 5                      # reps per wallet, so total = wallets × count
+
+  # For distribute (overrides amountMin/Max if present):
+  distributeMin: "0.01"
+  distributeMax: "0.03"
+
+  # For scheduler:
+  schedulerMode: random         # random | roundRobin
+  schedulerMinDelayMs: 5000     # random mode only
+  schedulerMaxDelayMs: 15000    # random mode only
+  schedulerCycleDelayMs: 10000  # roundRobin mode only
+  schedulerBuyRatio: 0.55       # 0..1; share of emissions that are Buys
+
+  # For gen-wallets:
+  walletCount: 10
