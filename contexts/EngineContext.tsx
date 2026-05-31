@@ -44,6 +44,12 @@ type EngineApi = {
   removeFromQueue: (id: string) => Promise<void>;
   // Wipe every action regardless of status.
   clearAllActions: () => Promise<number>;
+  // Stop only the scheduler (random/roundRobin) without stopping the worker.
+  // Useful for clearing the queue without letting the scheduler immediately
+  // re-fill it.
+  stopScheduler: () => void;
+  // True when a scheduler is currently emitting new actions.
+  schedulerRunning: boolean;
   logs: LogEntry[];
   nativeBalances: Record<string, bigint>;
   tokenBalances: Record<string, bigint>;
@@ -60,6 +66,7 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   const vault = useVault();
   const [mode, setMode] = useState<EngineMode>("manual");
   const [running, setRunning] = useState(false);
+  const [schedulerRunning, setSchedulerRunning] = useState(false);
   const [snapshot, setSnapshot] = useState<Action[]>([]);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [nativeBalances, setNativeBalances] = useState<Record<string, bigint>>({});
@@ -340,9 +347,20 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   const clearAllActions = useCallback(async () => {
     const queue = queueRef.current;
     if (!queue) return 0;
+    // Stop the scheduler first — otherwise it would immediately enqueue
+    // new actions and the user would see the queue re-fill.
+    schedulerRef.current?.stop();
+    schedulerRef.current = null;
+    setSchedulerRunning(false);
     const n = queue.all().length;
     await queue.clear();
     return n;
+  }, []);
+
+  const stopScheduler = useCallback(() => {
+    schedulerRef.current?.stop();
+    schedulerRef.current = null;
+    setSchedulerRunning(false);
   }, []);
 
   const start = useCallback(() => {
@@ -354,30 +372,30 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     const tokenAddress = vault.data.activeTokenAddress;
     if (!tokenAddress || wallets.length === 0) return;
     const emit = (a: NewAction) => { void enqueue(a); };
-    // Eligibility starts permissive; balance polling is out of v1 scope.
-    // Bad-eligibility actions fail at chain-call time and the worker logs/skips them.
     const eligibleBuy = () => true;
     const eligibleSell = () => true;
     if (mode === "random") {
       const cfg = DEFAULT_SCHED_CFG.random;
       const s = new RandomScheduler({ wallets, tokenAddress, ...cfg, eligibleBuy, eligibleSell, emit });
       s.start(); schedulerRef.current = s;
+      setSchedulerRunning(true);
     } else if (mode === "roundRobin") {
       const cfg = DEFAULT_SCHED_CFG.roundRobin;
       const s = new RoundRobinScheduler({ wallets, tokenAddress, ...cfg, eligibleBuy, eligibleSell, emit });
       s.start(); schedulerRef.current = s;
+      setSchedulerRunning(true);
     }
   }, [mode, vault.data, enqueue]);
 
   const stop = useCallback(() => {
-    schedulerRef.current?.stop(); schedulerRef.current = null;
+    stopScheduler();
     workerRef.current?.stop(); setRunning(false);
-  }, []);
+  }, [stopScheduler]);
 
   const drain = useCallback(() => {
-    schedulerRef.current?.stop(); schedulerRef.current = null;
+    stopScheduler();
     workerRef.current?.drain(); setRunning(false);
-  }, []);
+  }, [stopScheduler]);
 
   const removeFromQueue = useCallback(async (id: string) => {
     if (!queueRef.current) return;
@@ -397,10 +415,10 @@ export function EngineProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const api: EngineApi = useMemo(() => ({
-    mode, setMode, running, start, stop, drain, queueSnapshot: snapshot,
-    enqueue, enqueueBatch, removeFromQueue, clearAllActions,
+    mode, setMode, running, schedulerRunning, start, stop, drain, queueSnapshot: snapshot,
+    enqueue, enqueueBatch, removeFromQueue, clearAllActions, stopScheduler,
     logs, nativeBalances, tokenBalances, resetStuckActions,
-  }), [mode, running, snapshot, start, stop, drain, enqueue, enqueueBatch, removeFromQueue, clearAllActions, logs, nativeBalances, tokenBalances, resetStuckActions]);
+  }), [mode, running, schedulerRunning, snapshot, start, stop, drain, enqueue, enqueueBatch, removeFromQueue, clearAllActions, stopScheduler, logs, nativeBalances, tokenBalances, resetStuckActions]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }

@@ -32,20 +32,33 @@ export default function ActionsPage() {
 
   async function cancelAllQueued() {
     const queued = engine.queueSnapshot.filter((a) => a.status === "queued");
+    // If a scheduler (random/roundRobin) is running it will refill the queue
+    // immediately. Stop it first so the clear actually sticks.
+    const wasSchedulerRunning = engine.schedulerRunning;
+    if (wasSchedulerRunning) engine.stopScheduler();
     await activity.track(`Clearing ${queued.length} queued`, async () => {
       for (const a of queued) await engine.removeFromQueue(a.id);
     });
-    setMsg(`Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}.`);
-    setTimeout(() => setMsg(null), 3000);
+    setMsg(
+      wasSchedulerRunning
+        ? `Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}. Scheduler also stopped — click Start on Dashboard to resume.`
+        : `Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}.`,
+    );
+    setTimeout(() => setMsg(null), 5000);
   }
 
   async function clearAll() {
     const total = engine.queueSnapshot.length;
     if (total === 0) return;
     if (!confirm(`Remove ALL ${total} action${total === 1 ? "" : "s"} from the queue? This cannot be undone.`)) return;
+    const wasSchedulerRunning = engine.schedulerRunning;
     const n = await activity.track(`Clearing all ${total} actions`, () => engine.clearAllActions());
-    setMsg(`Removed ${n} action${n === 1 ? "" : "s"} from the queue.`);
-    setTimeout(() => setMsg(null), 3000);
+    setMsg(
+      wasSchedulerRunning
+        ? `Removed ${n} action${n === 1 ? "" : "s"}. Scheduler also stopped — click Start on Dashboard to resume.`
+        : `Removed ${n} action${n === 1 ? "" : "s"} from the queue.`,
+    );
+    setTimeout(() => setMsg(null), 5000);
   }
 
   const total = engine.queueSnapshot.length;
