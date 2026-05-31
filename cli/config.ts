@@ -57,12 +57,23 @@ export type OperationCfg = {
   distributeMin?: string;
   distributeMax?: string;
 
-  // For scheduler — random vs round-robin and pacing.
-  schedulerMode?: "random" | "roundRobin";
+  // For scheduler — random vs round-robin vs price-aware market maker.
+  schedulerMode?: "random" | "roundRobin" | "marketMaker";
   schedulerMinDelayMs?: number;
   schedulerMaxDelayMs?: number;
   schedulerCycleDelayMs?: number;
   schedulerBuyRatio?: number;
+
+  // marketMaker mode only:
+  // Native amount per 1 token (string, in native units, e.g. "0.0001"
+  // means 1 token = 0.0001 VLRX). If omitted, the scheduler captures
+  // the price observed at start and defends that.
+  mmTargetPrice?: string;
+  // Band width in basis points (200 = ±2%). Buys fire below the band,
+  // sells fire above; within the band emissions are random.
+  mmToleranceBps?: number;
+  // How often (ms) the MM checks the pool price and emits an action.
+  mmIntervalMs?: number;
 
   // For gen-wallets — how many to create.
   walletCount?: number;

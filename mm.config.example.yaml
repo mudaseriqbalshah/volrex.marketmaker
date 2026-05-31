@@ -49,11 +49,16 @@ operation:
   distributeMax: "0.03"
 
   # For scheduler:
-  schedulerMode: random         # random | roundRobin
+  schedulerMode: random         # random | roundRobin | marketMaker
   schedulerMinDelayMs: 5000     # random mode only
   schedulerMaxDelayMs: 15000    # random mode only
   schedulerCycleDelayMs: 10000  # roundRobin mode only
-  schedulerBuyRatio: 0.55       # 0..1; share of emissions that are Buys
+  schedulerBuyRatio: 0.55       # random/roundRobin only; 0..1; share of emissions that are Buys
+
+  # For schedulerMode: marketMaker
+  mmTargetPrice: ""             # native per 1 token (e.g. "0.0001"); empty → auto-capture
+  mmToleranceBps: 200           # band width; 200 = ±2%. Buys below band, Sells above
+  mmIntervalMs: 8000            # how often to check price + emit
 
   # For gen-wallets:
   walletCount: 10
