@@ -42,6 +42,10 @@ type EngineApi = {
   // Bulk-enqueue: one atomic persist call regardless of array size.
   enqueueBatch: (actions: NewAction[]) => Promise<Action[]>;
   removeFromQueue: (id: string) => Promise<void>;
+  // Bulk-remove actions matching a predicate (e.g. all queued). One
+  // persist call regardless of count — much faster than looping
+  // removeFromQueue for large batches.
+  removeWhere: (predicate: (a: Action) => boolean) => Promise<number>;
   // Wipe every action regardless of status.
   clearAllActions: () => Promise<number>;
   // Stop only the scheduler (random/roundRobin) without stopping the worker.
@@ -354,6 +358,9 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     setSchedulerRunning(false);
     const n = queue.all().length;
     await queue.clear();
+    // Forget any in-flight wallet tracking so we don't carry phantom
+    // "wallet busy" state for actions that no longer exist.
+    workerRef.current?.resetTracking();
     return n;
   }, []);
 
@@ -402,6 +409,11 @@ export function EngineProvider({ children }: { children: ReactNode }) {
     await queueRef.current.remove(id);
   }, []);
 
+  const removeWhere = useCallback(async (predicate: (a: Action) => boolean) => {
+    if (!queueRef.current) return 0;
+    return queueRef.current.removeWhere(predicate);
+  }, []);
+
   // Manually flip any action stuck in "running" back to "queued" so the worker
   // can pick it up again. Returns the number of actions reset.
   const resetStuckActions = useCallback(async () => {
@@ -416,9 +428,9 @@ export function EngineProvider({ children }: { children: ReactNode }) {
 
   const api: EngineApi = useMemo(() => ({
     mode, setMode, running, schedulerRunning, start, stop, drain, queueSnapshot: snapshot,
-    enqueue, enqueueBatch, removeFromQueue, clearAllActions, stopScheduler,
+    enqueue, enqueueBatch, removeFromQueue, removeWhere, clearAllActions, stopScheduler,
     logs, nativeBalances, tokenBalances, resetStuckActions,
-  }), [mode, running, schedulerRunning, snapshot, start, stop, drain, enqueue, enqueueBatch, removeFromQueue, clearAllActions, stopScheduler, logs, nativeBalances, tokenBalances, resetStuckActions]);
+  }), [mode, running, schedulerRunning, snapshot, start, stop, drain, enqueue, enqueueBatch, removeFromQueue, removeWhere, clearAllActions, stopScheduler, logs, nativeBalances, tokenBalances, resetStuckActions]);
 
   return <EngineContext.Provider value={api}>{children}</EngineContext.Provider>;
 }

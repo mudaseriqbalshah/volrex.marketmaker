@@ -46,6 +46,17 @@ export class Worker {
     return this.draining;
   }
 
+  // Forget about every wallet currently believed to be in-flight. Used by
+  // "Clear all" so any worker state tied to cleared actions doesn't keep
+  // blocking new dispatches on those wallets.
+  // Note: real in-flight Promises from prior dispatches will still resolve
+  // in the background; their finally blocks try to delete a wallet that's
+  // already gone (Set.delete on missing is a no-op).
+  resetTracking(): void {
+    this.inFlight.clear();
+    this.lastDispatchAt.clear();
+  }
+
   private tick(): void {
     if (this.draining) return;
     if (this.inFlight.size >= this.opts.maxConcurrent) return;

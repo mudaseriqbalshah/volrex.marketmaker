@@ -11,7 +11,11 @@ function newId(): string {
 export class ActionQueue {
   private items: Map<string, Action> = new Map();
 
-  constructor(initial: Action[], private persist: Persist) {
+  // Maximum total items to keep. When exceeded, the OLDEST completed
+  // items (done/failed) are auto-trimmed on flush. Queued / running items
+  // are never dropped. Prevents unbounded growth that makes persist slow
+  // and the Actions table sluggish to render.
+  constructor(initial: Action[], private persist: Persist, private maxKept: number = 1000) {
     for (const a of initial) this.items.set(a.id, a);
   }
 
@@ -110,7 +114,43 @@ export class ActionQueue {
     await this.flush();
   }
 
+  // Remove many items in one persist call. Much faster than awaiting
+  // remove() in a loop for large bulk operations like "Clear queued"
+  // when the queue has hundreds of items.
+  async removeMany(ids: string[]): Promise<number> {
+    let removed = 0;
+    for (const id of ids) {
+      if (this.items.delete(id)) removed += 1;
+    }
+    if (removed > 0) await this.flush();
+    return removed;
+  }
+
+  // Filter-and-remove. Returns the count removed. One persist call.
+  async removeWhere(predicate: (a: Action) => boolean): Promise<number> {
+    const toDelete: string[] = [];
+    for (const a of this.items.values()) {
+      if (predicate(a)) toDelete.push(a.id);
+    }
+    return this.removeMany(toDelete);
+  }
+
+  private trimIfOverCap(): void {
+    if (this.items.size <= this.maxKept) return;
+    // Drop the oldest done/failed first; never drop queued/running.
+    const finished = [...this.items.values()]
+      .filter((a) => a.status === "done" || a.status === "failed")
+      .sort((a, b) => (a.completedAt ?? 0) - (b.completedAt ?? 0));
+    let toRemove = this.items.size - this.maxKept;
+    for (const a of finished) {
+      if (toRemove <= 0) break;
+      this.items.delete(a.id);
+      toRemove -= 1;
+    }
+  }
+
   private async flush(): Promise<void> {
+    this.trimIfOverCap();
     await this.persist(this.all());
   }
 }

@@ -22,27 +22,29 @@ export default function ActionsPage() {
   }
 
   async function cancelAllFailed() {
-    const failed = engine.queueSnapshot.filter((a) => a.status === "failed");
-    await activity.track(`Clearing ${failed.length} failed`, async () => {
-      for (const a of failed) await engine.removeFromQueue(a.id);
-    });
-    setMsg(`Cleared ${failed.length} failed item${failed.length === 1 ? "" : "s"}.`);
+    const failedCount = counts.failed ?? 0;
+    if (failedCount === 0) return;
+    const n = await activity.track(`Clearing ${failedCount} failed`, () =>
+      engine.removeWhere((a) => a.status === "failed"),
+    );
+    setMsg(`Cleared ${n} failed item${n === 1 ? "" : "s"}.`);
     setTimeout(() => setMsg(null), 3000);
   }
 
   async function cancelAllQueued() {
-    const queued = engine.queueSnapshot.filter((a) => a.status === "queued");
+    const queuedCount = counts.queued ?? 0;
+    if (queuedCount === 0) return;
     // If a scheduler (random/roundRobin) is running it will refill the queue
     // immediately. Stop it first so the clear actually sticks.
     const wasSchedulerRunning = engine.schedulerRunning;
     if (wasSchedulerRunning) engine.stopScheduler();
-    await activity.track(`Clearing ${queued.length} queued`, async () => {
-      for (const a of queued) await engine.removeFromQueue(a.id);
-    });
+    const n = await activity.track(`Clearing ${queuedCount} queued`, () =>
+      engine.removeWhere((a) => a.status === "queued"),
+    );
     setMsg(
       wasSchedulerRunning
-        ? `Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}. Scheduler also stopped — click Start on Dashboard to resume.`
-        : `Cleared ${queued.length} queued item${queued.length === 1 ? "" : "s"}.`,
+        ? `Cleared ${n} queued item${n === 1 ? "" : "s"}. Scheduler also stopped — click Start on Dashboard to resume.`
+        : `Cleared ${n} queued item${n === 1 ? "" : "s"}.`,
     );
     setTimeout(() => setMsg(null), 5000);
   }
