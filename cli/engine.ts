@@ -8,6 +8,26 @@ import { ActionLogger } from "@/lib/logger";
 import type { Config } from "./config";
 import { CliState } from "./state";
 
+// Quick sanity check on a private key string. A valid secp256k1 key is
+// exactly 32 bytes = 64 hex chars; with the optional "0x" prefix that's
+// 66 characters total. We strip whitespace and produce a clear error
+// instead of letting ethers throw an opaque "invalid BytesLike value".
+function normalizePrivateKey(raw: string, where: string): string {
+  const trimmed = String(raw).trim();
+  const withPrefix = trimmed.startsWith("0x") || trimmed.startsWith("0X") ? trimmed : `0x${trimmed}`;
+  const hexBody = withPrefix.slice(2);
+  if (!/^[0-9a-fA-F]+$/.test(hexBody)) {
+    throw new Error(`${where}: private key contains non-hex characters`);
+  }
+  if (hexBody.length !== 64) {
+    throw new Error(
+      `${where}: private key has ${hexBody.length} hex characters (expected exactly 64). ` +
+        `Check your config — it might have an extra/missing character. Value ends with "…${hexBody.slice(-6)}".`,
+    );
+  }
+  return withPrefix;
+}
+
 // Bootstrap an engine instance — queue, worker, dispatch — from a CLI
 // config. Returns helpers to drive operations and shut down cleanly.
 export async function bootstrap(cfg: Config, state: CliState) {
@@ -21,12 +41,14 @@ export async function bootstrap(cfg: Config, state: CliState) {
   const signers = new Map<string, Wallet>();
   const addressById = new Map<string, string>();
 
-  const admin = new Wallet(cfg.fundingWallet.privateKey, provider);
+  const adminKey = normalizePrivateKey(cfg.fundingWallet.privateKey, "fundingWallet.privateKey");
+  const admin = new Wallet(adminKey, provider);
   signers.set("admin", admin);
   addressById.set("admin", admin.address);
 
   for (const w of cfg.tradingWallets) {
-    const s = new Wallet(w.privateKey, provider);
+    const k = normalizePrivateKey(w.privateKey, `tradingWallets[${w.label}].privateKey`);
+    const s = new Wallet(k, provider);
     signers.set(w.label, s);
     addressById.set(w.label, s.address);
   }
