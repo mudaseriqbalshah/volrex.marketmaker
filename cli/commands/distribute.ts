@@ -1,8 +1,31 @@
-import { parseEther, formatEther, JsonRpcProvider, Network, Wallet } from "ethers";
+import { parseEther, formatEther, JsonRpcProvider, Network, Wallet, type TransactionReceipt } from "ethers";
 import type { Engine } from "../engine";
 import { resolveWalletRange } from "../config";
 import { pickRandomInRange } from "@/lib/range";
 import type { NewAction } from "@/lib/engine/types";
+
+// ethers v6's provider.waitForTransaction has been observed to time out
+// against this network even when the tx is definitely mined. Polling
+// getTransactionReceipt directly is simpler and reliable — we control
+// the interval and bail explicitly when the receipt comes back.
+async function pollForReceipt(
+  provider: JsonRpcProvider,
+  hash: string,
+  timeoutMs: number,
+  intervalMs = 1500,
+): Promise<TransactionReceipt | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const receipt = await provider.getTransactionReceipt(hash);
+      if (receipt !== null) return receipt;
+    } catch {
+      // ignore transient RPC errors; retry on next tick
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return null;
+}
 
 export type DistributeOpts = {
   // When true, bypass the queue/worker and submit transfers directly
@@ -218,22 +241,43 @@ async function fastDistribute(
     return;
   }
 
-  // Wait for EVERY tx receipt, not just the last one. We poll all in
-  // parallel with a per-tx timeout so a single stuck tx doesn't block
-  // reporting on the others.
+  // Cheap completion check first: poll admin's "latest" (i.e. mined)
+  // nonce until it has advanced past every tx we broadcast. Way faster
+  // than per-tx receipt polling and avoids hammering the RPC.
   const timeoutMs = engine.config.engine.txTimeoutMs;
+  const lastNonce = broadcasted[broadcasted.length - 1]!.nonce;
+  const expectedMinedCount = lastNonce + 1;
   console.log(
-    `Waiting for ${broadcasted.length} receipts (per-tx timeout ${timeoutMs / 1000}s)…\n`,
+    `Waiting for admin's mined nonce to reach ${expectedMinedCount} (per-tx timeout ${timeoutMs / 1000}s)…`,
   );
+  const overallStart = Date.now();
+  let currentMinedNonce = 0;
+  while (Date.now() - overallStart < timeoutMs) {
+    try {
+      currentMinedNonce = await stickyProvider.getTransactionCount(stickyAdmin.address, "latest");
+      if (currentMinedNonce >= expectedMinedCount) break;
+    } catch {
+      // ignore
+    }
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  if (currentMinedNonce >= expectedMinedCount) {
+    console.log(
+      `All ${broadcasted.length} txs mined (admin nonce now ${currentMinedNonce}). Fetching receipts…\n`,
+    );
+  } else {
+    console.warn(
+      `\nAdmin nonce only advanced to ${currentMinedNonce} (expected ≥ ${expectedMinedCount}). Some txs may still be pending. Fetching whatever receipts are available…\n`,
+    );
+  }
 
+  // Per-tx receipt fetch (parallel, direct polling — no
+  // waitForTransaction). Per-tx timeout is short because by now most
+  // are already mined.
   const receiptResults = await Promise.allSettled(
     broadcasted.map(async (b) => {
-      try {
-        const receipt = await stickyProvider.waitForTransaction(b.hash, 1, timeoutMs);
-        return { ...b, receipt };
-      } catch (err) {
-        throw { ...b, error: err instanceof Error ? err.message : String(err) };
-      }
+      const receipt = await pollForReceipt(stickyProvider, b.hash, 10_000);
+      return { ...b, receipt };
     }),
   );
 
@@ -252,14 +296,12 @@ async function fastDistribute(
         console.error(`  ✗ reverted nonce=${r.value.nonce} → ${r.value.walletLabel} (${r.value.hash})`);
       } else {
         pending += 1;
-        console.warn(`  ⏳ unknown status nonce=${r.value.nonce} → ${r.value.walletLabel} (${r.value.hash})`);
+        console.warn(`  ⏳ no receipt yet nonce=${r.value.nonce} → ${r.value.walletLabel} (${r.value.hash})`);
       }
     } else {
       pending += 1;
-      const err = r.reason as { walletLabel: string; nonce: number; hash: string; error: string };
-      console.warn(
-        `  ⏳ timed out nonce=${err.nonce} → ${err.walletLabel} (${err.hash}) — ${err.error}`,
-      );
+      const err = r.reason as { message?: string };
+      console.warn(`  ⏳ receipt poll error: ${err.message ?? String(r.reason)}`);
     }
   }
 
