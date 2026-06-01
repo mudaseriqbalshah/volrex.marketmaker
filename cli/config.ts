@@ -74,6 +74,16 @@ export type OperationCfg = {
   mmToleranceBps?: number;
   // How often (ms) the MM checks the pool price and emits an action.
   mmIntervalMs?: number;
+  // Optional per-side amount overrides. If set they win over the
+  // shared amountMode / amountMin / amountMax. Use this to size Buys
+  // and Sells differently — e.g. Buy 1–20 VLRX absolute, Sell 80–100%
+  // of token balance.
+  mmBuyMode?: "absolute" | "percentage";
+  mmBuyMin?: string;
+  mmBuyMax?: string;
+  mmSellMode?: "absolute" | "percentage";
+  mmSellMin?: string;
+  mmSellMax?: string;
 
   // For gen-wallets — how many to create.
   walletCount?: number;

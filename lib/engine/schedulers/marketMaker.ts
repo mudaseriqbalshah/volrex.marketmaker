@@ -19,9 +19,20 @@ export type MarketMakerOpts = {
   tokenAddress: string;
   slippageBps: number;
   intervalMs: number;
+  // Default amount config — used for either side that doesn't override.
   amountMin: string;
   amountMax: string;
   amountMode: "absolute" | "percentage";
+  // Optional per-side overrides. If any of these are set they win over
+  // the shared amount* fields. Lets you, for example, Buy 1–20 VLRX in
+  // absolute mode and Sell 80–100% of the wallet's token balance in
+  // percentage mode — different unit + different range per side.
+  buyAmountMode?: "absolute" | "percentage";
+  buyAmountMin?: string;
+  buyAmountMax?: string;
+  sellAmountMode?: "absolute" | "percentage";
+  sellAmountMin?: string;
+  sellAmountMax?: string;
   // Quote function: returns the amount of native (in wei) one would
   // receive for selling `unitToken` of the token. The MM uses this as
   // the canonical "price". You typically wire this to:
@@ -98,10 +109,8 @@ export class MarketMakerScheduler {
       if (wallets.length > 0) {
         const walletId = wallets[this.idx % wallets.length] as string;
         this.idx += 1;
-        const amount = uniformDecimal(this.opts.amountMin, this.opts.amountMax, this.rng);
         const slip = this.opts.slippageBps;
         const tokenAddress = this.opts.tokenAddress;
-        const mode = this.opts.amountMode;
 
         let side: "buy" | "sell";
         if (decision === "neutral") {
@@ -109,6 +118,20 @@ export class MarketMakerScheduler {
         } else {
           side = decision;
         }
+
+        // Resolve per-side amount range + mode, falling back to the
+        // shared amount* when no override is provided.
+        const buyMin = this.opts.buyAmountMin ?? this.opts.amountMin;
+        const buyMax = this.opts.buyAmountMax ?? this.opts.amountMax;
+        const buyMode = this.opts.buyAmountMode ?? this.opts.amountMode;
+        const sellMin = this.opts.sellAmountMin ?? this.opts.amountMin;
+        const sellMax = this.opts.sellAmountMax ?? this.opts.amountMax;
+        const sellMode = this.opts.sellAmountMode ?? this.opts.amountMode;
+
+        const amount = side === "buy"
+          ? uniformDecimal(buyMin, buyMax, this.rng)
+          : uniformDecimal(sellMin, sellMax, this.rng);
+        const mode = side === "buy" ? buyMode : sellMode;
 
         const a: NewAction =
           side === "buy"

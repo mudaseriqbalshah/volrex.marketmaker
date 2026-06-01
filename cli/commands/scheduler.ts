@@ -7,7 +7,7 @@ import { RoundRobinScheduler } from "@/lib/engine/schedulers/roundRobin";
 import { MarketMakerScheduler } from "@/lib/engine/schedulers/marketMaker";
 import { routerContract, quoteOut } from "@/lib/router";
 import { erc20Contract, getErc20Balance } from "@/lib/erc20";
-import type { NewAction } from "@/lib/engine/types";
+import type { NewAction, BuyParams, SellParams } from "@/lib/engine/types";
 
 // Long-running command. Worker drains the queue in parallel while the
 // chosen scheduler emits new actions. Stops on SIGINT/SIGTERM.
@@ -91,41 +91,53 @@ export async function runScheduler(engine: Engine): Promise<void> {
     return b.tok > 0n && b.native >= gasReserve;
   }
 
-  // ── Emit wrapper ─────────────────────────────────────────────────
-  // Replaces both jitter and eligibility logic from the previous
-  // implementation. Builds the final amount, runs the right
-  // eligibility check, and either enqueues or logs a skip.
-  const emit = (a: NewAction) => {
-    let amountStr: string;
-    const isPercent = amountMode === "percentage";
+  // ── Eligibility-only enqueue ─────────────────────────────────────
+  // Used directly by marketMaker (which jitters internally with
+  // per-side ranges). Just checks balance and either enqueues or logs
+  // a skip — respects the action's existing amount + amountMode.
+  const tryEnqueue = (a: NewAction) => {
     if (a.kind === "Buy") {
-      amountStr = pickRandomInRange(min, max);
-      if (isPercent ? !eligiblePercentageBuy(a.walletId) : !eligibleAbsoluteBuy(a.walletId, amountStr)) {
+      const params = a.params as BuyParams;
+      const m = params.amountMode ?? "absolute";
+      const ok = m === "percentage"
+        ? eligiblePercentageBuy(a.walletId)
+        : eligibleAbsoluteBuy(a.walletId, params.amountNative);
+      if (!ok) {
         const b = cache.get(a.walletId);
         const have = b ? formatEther(b.native) : "?";
         console.log(`  skip Buy  ${a.walletId} — insufficient native (have ${have} VLRX)`);
         return;
       }
-      const jittered: NewAction = {
-        ...a,
-        params: { ...a.params, amountNative: amountStr, amountMode },
-      };
-      void engine.queue.enqueue(jittered);
     } else if (a.kind === "Sell") {
-      amountStr = pickRandomInRange(min, max);
-      if (isPercent ? !eligiblePercentageSell(a.walletId) : !eligibleAbsoluteSell(a.walletId, amountStr)) {
+      const params = a.params as SellParams;
+      const m = params.amountMode ?? "absolute";
+      const ok = m === "percentage"
+        ? eligiblePercentageSell(a.walletId)
+        : eligibleAbsoluteSell(a.walletId, params.amountToken);
+      if (!ok) {
         const b = cache.get(a.walletId);
         const haveTok = b ? formatUnits(b.tok, token.decimals) : "?";
         console.log(`  skip Sell ${a.walletId} — insufficient ${token.symbol} (have ${haveTok})`);
         return;
       }
-      const jittered: NewAction = {
-        ...a,
-        params: { ...a.params, amountToken: amountStr, amountMode },
-      };
-      void engine.queue.enqueue(jittered);
+    }
+    void engine.queue.enqueue(a);
+  };
+
+  // ── Jittered emit ────────────────────────────────────────────────
+  // Used by random / roundRobin schedulers, which don't randomize
+  // their amount internally — they send a fixed value we override
+  // here with a per-emission pick from [min, max] before checking
+  // eligibility and enqueueing.
+  const emitJittered = (a: NewAction) => {
+    if (a.kind === "Buy") {
+      const amountStr = pickRandomInRange(min, max);
+      tryEnqueue({ ...a, params: { ...a.params, amountNative: amountStr, amountMode } });
+    } else if (a.kind === "Sell") {
+      const amountStr = pickRandomInRange(min, max);
+      tryEnqueue({ ...a, params: { ...a.params, amountToken: amountStr, amountMode } });
     } else {
-      void engine.queue.enqueue(a);
+      tryEnqueue(a);
     }
   };
 
@@ -144,7 +156,7 @@ export async function runScheduler(engine: Engine): Promise<void> {
       maxAmount: max,
       eligibleBuy: () => true,  // gating happens inside our emit wrapper
       eligibleSell: () => true,
-      emit,
+      emit: emitJittered,
     });
   } else if (mode === "roundRobin") {
     scheduler = new RoundRobinScheduler({
@@ -156,7 +168,7 @@ export async function runScheduler(engine: Engine): Promise<void> {
       amountPerWallet: min,
       eligibleBuy: () => true,
       eligibleSell: () => true,
-      emit,
+      emit: emitJittered,
     });
   } else {
     // marketMaker: price-aware. Reads pool price each interval and
@@ -178,11 +190,19 @@ export async function runScheduler(engine: Engine): Promise<void> {
       amountMin: min,
       amountMax: max,
       amountMode,
+      // Per-side overrides for asymmetric Buy/Sell sizing (e.g. Buy
+      // 1–20 VLRX absolute, Sell 80–100% of token balance).
+      buyAmountMode: op.mmBuyMode,
+      buyAmountMin: op.mmBuyMin,
+      buyAmountMax: op.mmBuyMax,
+      sellAmountMode: op.mmSellMode,
+      sellAmountMin: op.mmSellMin,
+      sellAmountMax: op.mmSellMax,
       getPrice,
       unitToken,
       targetPrice: target,
       toleranceBps: op.mmToleranceBps ?? 200,
-      emit,  // shared emit with eligibility + jitter
+      emit: tryEnqueue,  // MM jitters internally with per-side ranges
       onTick: ({ price, target: t, decision, walletId, amount }) => {
         const priceNative = Number(price) / 1e18;
         const targetNative = Number(t) / 1e18;
