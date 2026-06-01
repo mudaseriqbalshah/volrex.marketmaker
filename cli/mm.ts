@@ -61,6 +61,11 @@ async function main(): Promise<void> {
       max: { type: "string" },
       "scheduler-mode": { type: "string" },
       "wallet-count": { type: "string" },
+      // Skip the queue/worker for distribute (and any future fast-path
+      // commands) and broadcast with consecutive nonces concurrently.
+      parallel: { type: "boolean", default: false },
+      // Number of in-flight broadcasts at once in --parallel mode.
+      "batch-size": { type: "string" },
     },
     allowPositionals: true,
   });
@@ -114,7 +119,10 @@ async function main(): Promise<void> {
 
     switch (opType) {
       case "distribute":
-        await runDistribute(engine);
+        await runDistribute(engine, {
+          parallel: values.parallel ?? false,
+          batchSize: values["batch-size"] ? Number(values["batch-size"]) : undefined,
+        });
         break;
       case "collect":
         await runCollect(engine);
