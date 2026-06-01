@@ -44,9 +44,11 @@ operation:
   amountMax: "0.02"
   count: 5                      # reps per wallet, so total = wallets × count
 
-  # For distribute (overrides amountMin/Max if present):
-  distributeMin: "0.01"
-  distributeMax: "0.03"
+  # For distribute. Uncomment to give distribute its own range that's
+  # independent of amountMin/Max above. If you pass --min/--max on the
+  # CLI, BOTH the amount* and distribute* fields get overridden.
+  # distributeMin: "0.01"
+  # distributeMax: "0.03"
 
   # For scheduler:
   schedulerMode: random         # random | roundRobin | marketMaker

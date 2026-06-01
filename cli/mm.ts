@@ -80,8 +80,17 @@ async function main(): Promise<void> {
   if (values.side) cfg.operation.side = values.side as "buy" | "sell" | "alternate";
   if (values.count) cfg.operation.count = Number(values.count);
   if (values["amount-mode"]) cfg.operation.amountMode = values["amount-mode"] as "absolute" | "percentage";
-  if (values.min) cfg.operation.amountMin = values.min;
-  if (values.max) cfg.operation.amountMax = values.max;
+  // --min / --max override BOTH the generic amount* fields and the
+  // distribute-specific override fields. Otherwise a stale `distributeMin`
+  // in the YAML would silently win and the CLI flag would be ignored.
+  if (values.min) {
+    cfg.operation.amountMin = values.min;
+    cfg.operation.distributeMin = values.min;
+  }
+  if (values.max) {
+    cfg.operation.amountMax = values.max;
+    cfg.operation.distributeMax = values.max;
+  }
   if (values["scheduler-mode"]) cfg.operation.schedulerMode = values["scheduler-mode"] as "random" | "roundRobin";
   if (values["wallet-count"]) cfg.operation.walletCount = Number(values["wallet-count"]);
 
