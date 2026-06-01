@@ -5,6 +5,33 @@ Headless, config-driven version of the web dashboard. Same engine
 persistence layers differ. Everything that the web app does, the CLI can
 do, plus a price-aware market-maker mode that the web UI doesn't have.
 
+## How to invoke the CLI
+
+You have three equivalent ways to call `mm` from the project root.
+Pick whichever you like; the rest of this README uses `mm` as a
+stand-in.
+
+```bash
+# 1. Wrapper script (recommended, shortest):
+./cli/mm.cjs <command> [flags]
+
+# 2. npm script (no path needed; pass args after `--`):
+npm run cli -- <command> [flags]
+
+# 3. Global symlink (one-time setup; lets you write `mm` anywhere):
+sudo npm link           # writes a symlink into your global node_modules
+mm <command> [flags]
+```
+
+The bare `npx mm …` only works after `npm link` (or after publishing
+to npm); without it `npx` doesn't know where `mm` lives.
+
+Internally all three go through the same path: a tiny `cli/mm.cjs`
+wrapper spawns the locally-installed `tsx` to run `cli/mm.ts`. node
+on its own can't execute the TypeScript file (bare imports like
+`./config` need a TS-aware resolver), and `tsx` handles that
+transparently.
+
 ## TL;DR
 
 ```bash
@@ -18,18 +45,18 @@ chmod 600 mm.config.yaml       # private keys live here — keep it tight
 # 3. edit mm.config.yaml — see "Configuration" below
 
 # 4. generate trading wallets
-npx mm gen-wallets --wallet-count 10
+./cli/mm.cjs gen-wallets --wallet-count 10
 
 # 5. check balances on chain
-npx mm balances
+./cli/mm.cjs balances
 
 # 6. fund trading wallets
-npx mm distribute --range 1-10 --min 0.01 --max 0.02
+./cli/mm.cjs distribute --range 1-10 --min 0.01 --max 0.02
 
 # 7. drive trades
-npx mm fire --range 1-10 --side alternate --count 5
+./cli/mm.cjs fire --range 1-10 --side alternate --count 5
 # or run a long-lived loop:
-npx mm scheduler --scheduler-mode marketMaker
+./cli/mm.cjs scheduler --scheduler-mode marketMaker
 ```
 
 ---
@@ -159,7 +186,7 @@ file, and print their addresses. Re-writes the config in place (mode
 `600`).
 
 ```bash
-npx mm gen-wallets --wallet-count 25
+./cli/mm.cjs gen-wallets --wallet-count 25
 ```
 
 ### `mm balances`
@@ -168,7 +195,7 @@ Show native + active-token balances for the funding wallet and every
 trading wallet. Read-only.
 
 ```bash
-npx mm balances
+./cli/mm.cjs balances
 ```
 
 ### `mm distribute`
@@ -179,10 +206,10 @@ wallets. Each transfer's amount is a fresh random pick in
 
 ```bash
 # config-driven
-npx mm distribute
+./cli/mm.cjs distribute
 
 # overrides
-npx mm distribute --range 1-50 --min 0.005 --max 0.02
+./cli/mm.cjs distribute --range 1-50 --min 0.005 --max 0.02
 ```
 
 Waits until every transfer is mined before exiting.
@@ -193,7 +220,7 @@ Queue `TransferBackETH` from each wallet in range → funding wallet.
 Each wallet keeps a small gas reserve (default 0.001 VLRX).
 
 ```bash
-npx mm collect --range 1-50
+./cli/mm.cjs collect --range 1-50
 ```
 
 ### `mm fire`
@@ -203,10 +230,10 @@ worker drain them.
 
 ```bash
 # 5 buys per wallet on wallets 1-10, random 0.005-0.02 VLRX each
-npx mm fire --range 1-10 --side buy --count 5 --min 0.005 --max 0.02
+./cli/mm.cjs fire --range 1-10 --side buy --count 5 --min 0.005 --max 0.02
 
 # alternate buy/sell, 30% of each wallet's balance per action
-npx mm fire --range 1-25 --side alternate \
+./cli/mm.cjs fire --range 1-25 --side alternate \
             --amount-mode percentage --min 20 --max 40 --count 10
 ```
 
@@ -220,7 +247,7 @@ Pick a random wallet every `[minDelay, maxDelay]` ms and emit a Buy or
 Sell biased by `buyRatio`.
 
 ```bash
-npx mm scheduler --scheduler-mode random --range 1-25
+./cli/mm.cjs scheduler --scheduler-mode random --range 1-25
 ```
 
 #### `roundRobin`
@@ -229,7 +256,7 @@ Cycle through wallets in order with a fixed `cycleDelayMs` between
 emissions.
 
 ```bash
-npx mm scheduler --scheduler-mode roundRobin --range 1-25
+./cli/mm.cjs scheduler --scheduler-mode roundRobin --range 1-25
 ```
 
 #### `marketMaker` (real market maker)
@@ -251,7 +278,7 @@ but want to stabilize the price as it is now.
 
 ```bash
 # defend $0.0001 ± 2% across wallets 1-10
-npx mm scheduler --scheduler-mode marketMaker --range 1-10
+./cli/mm.cjs scheduler --scheduler-mode marketMaker --range 1-10
 
 # (set operation.mmTargetPrice and mmToleranceBps in the config first)
 ```
@@ -274,7 +301,7 @@ Wipe `mm-state/queue.json` — useful if a prior run left a backlog you
 no longer want.
 
 ```bash
-npx mm clear
+./cli/mm.cjs clear
 ```
 
 ### `mm run`
@@ -284,7 +311,7 @@ running the explicit command of that type. Lets you commit a fully
 configured run and execute with a single command.
 
 ```bash
-npx mm run
+./cli/mm.cjs run
 ```
 
 ---
@@ -317,24 +344,24 @@ worker can pick them up.
 cp mm.config.example.yaml mm.config.yaml
 chmod 600 mm.config.yaml
 # edit fundingWallet.privateKey and token.address
-npx mm gen-wallets --wallet-count 20
-npx mm balances                                # confirm funding wallet has VLRX
-npx mm distribute --range 1-20 --min 0.01 --max 0.02
-npx mm fire --range 1-20 --side buy --count 1  # seed each wallet with token
-npx mm scheduler --scheduler-mode marketMaker  # real market making
+./cli/mm.cjs gen-wallets --wallet-count 20
+./cli/mm.cjs balances                                # confirm funding wallet has VLRX
+./cli/mm.cjs distribute --range 1-20 --min 0.01 --max 0.02
+./cli/mm.cjs fire --range 1-20 --side buy --count 1  # seed each wallet with token
+./cli/mm.cjs scheduler --scheduler-mode marketMaker  # real market making
 ```
 
 **Tear it down:**
 ```bash
 # Ctrl+C the scheduler
-npx mm collect --range 1-20
-npx mm balances                                # admin should have ~original
+./cli/mm.cjs collect --range 1-20
+./cli/mm.cjs balances                                # admin should have ~original
 ```
 
 **Switch to volume mode quickly:**
 ```bash
 # stop whatever's running, then:
-npx mm scheduler --scheduler-mode random \
+./cli/mm.cjs scheduler --scheduler-mode random \
                  --range 1-20 \
                  --amount-mode percentage \
                  --min 15 --max 35

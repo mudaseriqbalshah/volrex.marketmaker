@@ -12,7 +12,7 @@
     "cli": "tsx cli/mm.ts"
   },
   "bin": {
-    "mm": "./cli/mm.ts"
+    "mm": "./cli/mm.cjs"
   },
   "dependencies": {
     "next": "15.0.3",
