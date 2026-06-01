@@ -1,4 +1,4 @@
-import { parseUnits } from "ethers";
+import { parseEther, parseUnits, formatEther, formatUnits } from "ethers";
 import type { Engine } from "../engine";
 import { resolveWalletRange } from "../config";
 import { pickRandomInRange } from "@/lib/range";
@@ -6,6 +6,7 @@ import { RandomScheduler } from "@/lib/engine/schedulers/random";
 import { RoundRobinScheduler } from "@/lib/engine/schedulers/roundRobin";
 import { MarketMakerScheduler } from "@/lib/engine/schedulers/marketMaker";
 import { routerContract, quoteOut } from "@/lib/router";
+import { erc20Contract, getErc20Balance } from "@/lib/erc20";
 import type { NewAction } from "@/lib/engine/types";
 
 // Long-running command. Worker drains the queue in parallel while the
@@ -27,16 +28,105 @@ export async function runScheduler(engine: Engine): Promise<void> {
   engine.worker.start();
   console.log(`Worker started (max ${engine.config.engine.maxConcurrent} concurrent).`);
 
-  // Each scheduler emits NewAction; we jitter the amount per emission so
-  // back-to-back swaps don't carry the literal min value.
-  const emitWithJitter = (a: NewAction) => {
-    const jittered = { ...a };
-    if (jittered.kind === "Buy") {
-      jittered.params = { ...jittered.params, amountNative: pickRandomInRange(min, max), amountMode };
-    } else if (jittered.kind === "Sell") {
-      jittered.params = { ...jittered.params, amountToken: pickRandomInRange(min, max), amountMode };
+  // ── Balance cache + eligibility ──────────────────────────────────
+  // Schedulers must NOT enqueue Buys against wallets that have no VLRX
+  // for gas+swap, or Sells against wallets that hold zero of the token
+  // — those guaranteed-revert actions just waste RPC and clutter logs.
+  // We poll balances periodically and check from cache before each emit.
+  const tokenContract = erc20Contract(token.address, engine.provider);
+  type Bal = { native: bigint; tok: bigint; updatedAt: number };
+  const cache = new Map<string, Bal>();
+
+  async function refreshBalance(walletId: string): Promise<void> {
+    const addr = engine.addressById.get(walletId);
+    if (!addr) return;
+    try {
+      const [native, tok] = await Promise.all([
+        engine.provider.getBalance(addr),
+        getErc20Balance(tokenContract, addr),
+      ]);
+      cache.set(walletId, { native, tok, updatedAt: Date.now() });
+    } catch {
+      // ignore; next refresh will retry
     }
-    void engine.queue.enqueue(jittered);
+  }
+
+  // Seed the cache so the first scheduler tick has data, and refresh
+  // every `balancePollMs` (default 15s) afterwards. Stale cache is OK
+  // for eligibility — at worst we'll skip a wallet that just received
+  // funds; the next refresh picks it up.
+  await Promise.all(wallets.map((w) => refreshBalance(w.label)));
+  const balanceTimer = setInterval(() => {
+    void Promise.all(wallets.map((w) => refreshBalance(w.label)));
+  }, 15_000);
+
+  // Reserve some native for gas so we don't queue Buys that drain the
+  // wallet completely. Roughly: gas units (300k) × gasPrice × multiplier.
+  const gasReserve = parseEther("0.001");
+
+  function eligibleAbsoluteBuy(walletId: string, amountStr: string): boolean {
+    const b = cache.get(walletId);
+    if (!b) return false;
+    let need: bigint;
+    try { need = parseEther(amountStr); } catch { return false; }
+    return b.native >= need + gasReserve;
+  }
+  function eligibleAbsoluteSell(walletId: string, amountStr: string): boolean {
+    const b = cache.get(walletId);
+    if (!b) return false;
+    if (b.native < gasReserve) return false;
+    let need: bigint;
+    try { need = parseUnits(amountStr, token.decimals); } catch { return false; }
+    return b.tok >= need;
+  }
+  function eligiblePercentageBuy(walletId: string): boolean {
+    const b = cache.get(walletId);
+    if (!b) return false;
+    // Need at least enough native to cover gas + something to swap.
+    return b.native > gasReserve;
+  }
+  function eligiblePercentageSell(walletId: string): boolean {
+    const b = cache.get(walletId);
+    if (!b) return false;
+    return b.tok > 0n && b.native >= gasReserve;
+  }
+
+  // ── Emit wrapper ─────────────────────────────────────────────────
+  // Replaces both jitter and eligibility logic from the previous
+  // implementation. Builds the final amount, runs the right
+  // eligibility check, and either enqueues or logs a skip.
+  const emit = (a: NewAction) => {
+    let amountStr: string;
+    const isPercent = amountMode === "percentage";
+    if (a.kind === "Buy") {
+      amountStr = pickRandomInRange(min, max);
+      if (isPercent ? !eligiblePercentageBuy(a.walletId) : !eligibleAbsoluteBuy(a.walletId, amountStr)) {
+        const b = cache.get(a.walletId);
+        const have = b ? formatEther(b.native) : "?";
+        console.log(`  skip Buy  ${a.walletId} — insufficient native (have ${have} VLRX)`);
+        return;
+      }
+      const jittered: NewAction = {
+        ...a,
+        params: { ...a.params, amountNative: amountStr, amountMode },
+      };
+      void engine.queue.enqueue(jittered);
+    } else if (a.kind === "Sell") {
+      amountStr = pickRandomInRange(min, max);
+      if (isPercent ? !eligiblePercentageSell(a.walletId) : !eligibleAbsoluteSell(a.walletId, amountStr)) {
+        const b = cache.get(a.walletId);
+        const haveTok = b ? formatUnits(b.tok, token.decimals) : "?";
+        console.log(`  skip Sell ${a.walletId} — insufficient ${token.symbol} (have ${haveTok})`);
+        return;
+      }
+      const jittered: NewAction = {
+        ...a,
+        params: { ...a.params, amountToken: amountStr, amountMode },
+      };
+      void engine.queue.enqueue(jittered);
+    } else {
+      void engine.queue.enqueue(a);
+    }
   };
 
   const walletIds = wallets.map((w) => w.label);
@@ -52,9 +142,9 @@ export async function runScheduler(engine: Engine): Promise<void> {
       maxDelayMs: op.schedulerMaxDelayMs ?? 15000,
       minAmount: min,
       maxAmount: max,
-      eligibleBuy: () => true,
+      eligibleBuy: () => true,  // gating happens inside our emit wrapper
       eligibleSell: () => true,
-      emit: emitWithJitter,
+      emit,
     });
   } else if (mode === "roundRobin") {
     scheduler = new RoundRobinScheduler({
@@ -66,7 +156,7 @@ export async function runScheduler(engine: Engine): Promise<void> {
       amountPerWallet: min,
       eligibleBuy: () => true,
       eligibleSell: () => true,
-      emit: emitWithJitter,
+      emit,
     });
   } else {
     // marketMaker: price-aware. Reads pool price each interval and
@@ -76,13 +166,9 @@ export async function runScheduler(engine: Engine): Promise<void> {
     const unitToken = 10n ** BigInt(token.decimals);
     const path = [token.address, engine.config.chain.wethAddress];
     const targetPriceStr = op.mmTargetPrice;
-    // targetPrice is native-per-1-token. parseUnits with native decimals (18).
     const target = targetPriceStr ? parseUnits(targetPriceStr, 18) : undefined;
 
-    const getPrice = async (): Promise<bigint> => {
-      // How much native do you get for selling 1 token? That's the price.
-      return quoteOut(router as never, unitToken, path);
-    };
+    const getPrice = async (): Promise<bigint> => quoteOut(router as never, unitToken, path);
 
     scheduler = new MarketMakerScheduler({
       wallets: walletIds,
@@ -96,7 +182,7 @@ export async function runScheduler(engine: Engine): Promise<void> {
       unitToken,
       targetPrice: target,
       toleranceBps: op.mmToleranceBps ?? 200,
-      emit: (a) => void engine.queue.enqueue(a), // already-jittered amounts
+      emit,  // shared emit with eligibility + jitter
       onTick: ({ price, target: t, decision, walletId, amount }) => {
         const priceNative = Number(price) / 1e18;
         const targetNative = Number(t) / 1e18;
@@ -124,6 +210,7 @@ export async function runScheduler(engine: Engine): Promise<void> {
   const shutdown = (sig: string) => {
     console.log(`\n${sig} received — stopping scheduler and draining queue…`);
     scheduler.stop();
+    clearInterval(balanceTimer);
     engine.worker.drain();
     void engine.waitDrained().then(() => {
       console.log("Queue drained. Exiting.");
