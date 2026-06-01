@@ -1,4 +1,4 @@
-import { parseEther, formatEther } from "ethers";
+import { parseEther, formatEther, JsonRpcProvider, Network, Wallet } from "ethers";
 import type { Engine } from "../engine";
 import { resolveWalletRange } from "../config";
 import { pickRandomInRange } from "@/lib/range";
@@ -113,9 +113,19 @@ export async function runDistribute(engine: Engine, opts: DistributeOpts = {}): 
 
 // ── Fast parallel path ────────────────────────────────────────────
 // Pre-fetches admin's nonce, builds N txs with consecutive nonces
-// (N, N+1, N+2, ...), submits them in batches concurrently. The chain
-// orders them by nonce so they mine in order. Failure of one doesn't
-// block the others as long as the broadcast succeeded.
+// (N, N+1, N+2, ...), submits them in batches concurrently to a SINGLE
+// RPC node, then waits for every receipt.
+//
+// Important: we deliberately do NOT use engine.provider here — that's
+// the round-robin proxy across all configured RPC URLs, and using it
+// means consecutive txs from the same wallet land on different nodes.
+// Each node has its own mempool view, so by the time one block is
+// proposed only a subset of our txs have actually reached the
+// proposer. Result: some txs mine, others get stuck in stale mempools
+// until cross-node sync catches up.
+//
+// Sticking to a single node gives consistent ordering and lets us
+// reliably wait for receipts via the same node that received them.
 async function fastDistribute(
   engine: Engine,
   wallets: { label: string }[],
@@ -123,9 +133,18 @@ async function fastDistribute(
   max: string,
   batchSize: number,
 ): Promise<void> {
-  const admin = engine.signers.get("admin")!;
-  const startNonce = await engine.provider.getTransactionCount(admin.address, "pending");
-  const fee = await engine.provider.getFeeData();
+  const chainId = engine.config.chain.chainId;
+  const rpcUrl = engine.config.chain.rpcUrls[0];
+  if (!rpcUrl) {
+    console.error("No RPC URL configured");
+    process.exit(1);
+  }
+  const network = new Network(`chain-${chainId}`, chainId);
+  const stickyProvider = new JsonRpcProvider(rpcUrl, network, { staticNetwork: network });
+  const stickyAdmin = new Wallet(engine.config.fundingWallet.privateKey, stickyProvider);
+
+  const startNonce = await stickyProvider.getTransactionCount(stickyAdmin.address, "pending");
+  const fee = await stickyProvider.getFeeData();
   const baseGas = fee.gasPrice ?? 1n;
   const mult = engine.config.engine.gasMultiplier;
   const gasPrice = (baseGas * BigInt(Math.round(mult * 100))) / 100n;
@@ -142,19 +161,24 @@ async function fastDistribute(
   });
 
   console.log(
-    `\nPARALLEL mode: ${txDescriptors.length} txs, nonces ${startNonce}–${startNonce + txDescriptors.length - 1}, batches of ${batchSize}\n`,
+    `\nPARALLEL mode: ${txDescriptors.length} txs, nonces ${startNonce}–${startNonce + txDescriptors.length - 1}, batches of ${batchSize}`,
   );
+  console.log(`Using single RPC for consistency: ${rpcUrl}\n`);
 
   const t0 = Date.now();
-  let succeeded = 0;
-  let failed = 0;
-  const txHashes: string[] = [];
+  let broadcastFailed = 0;
+  const broadcasted: Array<{
+    walletLabel: string;
+    nonce: number;
+    hash: string;
+    amountStr: string;
+  }> = [];
 
   for (let i = 0; i < txDescriptors.length; i += batchSize) {
     const batch = txDescriptors.slice(i, i + batchSize);
     const results = await Promise.allSettled(
       batch.map(async (d) => {
-        const tx = await admin.sendTransaction({
+        const tx = await stickyAdmin.sendTransaction({
           to: d.to,
           value: d.value,
           nonce: d.nonce,
@@ -167,13 +191,17 @@ async function fastDistribute(
 
     for (const r of results) {
       if (r.status === "fulfilled") {
-        succeeded += 1;
-        txHashes.push(r.value.hash);
+        broadcasted.push({
+          walletLabel: r.value.walletLabel,
+          nonce: r.value.nonce,
+          hash: r.value.hash,
+          amountStr: r.value.amountStr,
+        });
         console.log(
-          `  ✓ nonce=${r.value.nonce} → ${r.value.walletLabel} ${r.value.amountStr} VLRX (${r.value.hash.slice(0, 12)}…)`,
+          `  ✓ broadcast nonce=${r.value.nonce} → ${r.value.walletLabel} ${r.value.amountStr} VLRX (${r.value.hash.slice(0, 12)}…)`,
         );
       } else {
-        failed += 1;
+        broadcastFailed += 1;
         const err = r.reason as { message?: string; code?: string };
         console.error(`  ✗ broadcast failed: [${err.code ?? "?"}] ${err.message ?? String(r.reason)}`);
       }
@@ -182,17 +210,63 @@ async function fastDistribute(
 
   const dt = ((Date.now() - t0) / 1000).toFixed(1);
   console.log(
-    `\nBroadcast: ${succeeded}/${txDescriptors.length} succeeded in ${dt}s. ${failed} failed.`,
+    `\nBroadcast phase: ${broadcasted.length}/${txDescriptors.length} accepted by RPC in ${dt}s. ${broadcastFailed} rejected.`,
   );
 
-  if (txHashes.length > 0) {
-    console.log("Waiting for the last broadcasted tx to confirm (proxy for the rest)…");
-    try {
-      const last = await engine.provider.waitForTransaction(txHashes[txHashes.length - 1]!);
-      console.log(`Last tx mined in block ${last?.blockNumber ?? "?"}. All earlier txs should have mined too.`);
-    } catch (err) {
-      console.warn(`Could not confirm last tx: ${err instanceof Error ? err.message : String(err)}`);
-      console.warn("Check the explorer with the tx hashes above.");
+  if (broadcasted.length === 0) {
+    console.log("Nothing to wait for. Exiting.");
+    return;
+  }
+
+  // Wait for EVERY tx receipt, not just the last one. We poll all in
+  // parallel with a per-tx timeout so a single stuck tx doesn't block
+  // reporting on the others.
+  const timeoutMs = engine.config.engine.txTimeoutMs;
+  console.log(
+    `Waiting for ${broadcasted.length} receipts (per-tx timeout ${timeoutMs / 1000}s)…\n`,
+  );
+
+  const receiptResults = await Promise.allSettled(
+    broadcasted.map(async (b) => {
+      try {
+        const receipt = await stickyProvider.waitForTransaction(b.hash, 1, timeoutMs);
+        return { ...b, receipt };
+      } catch (err) {
+        throw { ...b, error: err instanceof Error ? err.message : String(err) };
+      }
+    }),
+  );
+
+  let mined = 0;
+  let reverted = 0;
+  let pending = 0;
+  for (const r of receiptResults) {
+    if (r.status === "fulfilled") {
+      if (r.value.receipt && r.value.receipt.status === 1) {
+        mined += 1;
+        console.log(
+          `  ✓ mined nonce=${r.value.nonce} → ${r.value.walletLabel} in block ${r.value.receipt.blockNumber}`,
+        );
+      } else if (r.value.receipt && r.value.receipt.status === 0) {
+        reverted += 1;
+        console.error(`  ✗ reverted nonce=${r.value.nonce} → ${r.value.walletLabel} (${r.value.hash})`);
+      } else {
+        pending += 1;
+        console.warn(`  ⏳ unknown status nonce=${r.value.nonce} → ${r.value.walletLabel} (${r.value.hash})`);
+      }
+    } else {
+      pending += 1;
+      const err = r.reason as { walletLabel: string; nonce: number; hash: string; error: string };
+      console.warn(
+        `  ⏳ timed out nonce=${err.nonce} → ${err.walletLabel} (${err.hash}) — ${err.error}`,
+      );
     }
+  }
+
+  console.log(`\nDone: mined=${mined} reverted=${reverted} pending/unknown=${pending}.`);
+  if (pending > 0) {
+    console.log(
+      "Pending txs may still mine later. If they don't, they're stuck — wait or run `mm distribute` again to overwrite.",
+    );
   }
 }
