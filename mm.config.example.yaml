@@ -189,3 +189,23 @@ markets:
     mmSellMode: percentage
     mmSellMin: "10"
     mmSellMax: "30"
+
+# ── Liquidity plan (for the `add-liquidity` command) ─────────────────
+# Create pools (token / native) in one go. The funding wallet must hold
+# enough VLRX (sum of nativeAmounts) AND enough of each token. The
+# command:
+#   1. approve(router, MaxUint256) per token, if allowance < tokenAmount
+#   2. router.addLiquidityETH(token, tokenAmount, 0, 0, recipient,
+#      deadline, {value: nativeAmount})
+#
+# Initial price is implied by the ratio: nativeAmount / tokenAmount.
+# Numbers below match the spreadsheet you sent.
+liquidityPlan:
+  # recipient: "0x..."     # default = funding wallet
+  deadlineSec: 600
+  pools:
+    - { symbol: PROM, token: "0xF5D6F3424E46862A6D2750e175cc5c4A6140E086", decimals: 18, nativeAmount: "100000", tokenAmount: "233333.33" }
+    - { symbol: GAI,  token: "0x01f6d4f29Fab0617D1af3F8fDf6bD206131e078a", decimals: 18, nativeAmount: "100000", tokenAmount: "70000000" }
+    - { symbol: MAC,  token: "0x99BF6bEDa955dB9921FD4C7129Ab3672f3b17C36", decimals: 18, nativeAmount: "100000", tokenAmount: "28000" }
+    - { symbol: META, token: "0x1b38D0CAf7B85c18Be40AE342447878e464E4082", decimals: 18, nativeAmount: "100000", tokenAmount: "7000000000" }
+    - { symbol: GenZ, token: "0xc424015480fe71B4D79D693937C375cF06A0914C", decimals: 18, nativeAmount: "100000", tokenAmount: "700000000000" }

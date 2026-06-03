@@ -37,6 +37,7 @@ export type OperationCfg = {
     | "collect"
     | "balances"
     | "gen-wallets"
+    | "add-liquidity"
     | "clear";
 
   // For fire / scheduler — which wallets to target.
@@ -121,6 +122,28 @@ export type MarketCfg = {
   mmSellMax?: string;
 };
 
+// One pool to seed in the `add-liquidity` command.
+// nativeAmount and tokenAmount are human-readable decimal strings;
+// the script multiplies by 10^18 (native) and 10^decimals (token).
+// initialPrice = nativeAmount / tokenAmount automatically.
+export type LiquidityPoolCfg = {
+  symbol: string;
+  token: string;            // ERC-20 address
+  decimals: number;
+  nativeAmount: string;     // VLRX side
+  tokenAmount: string;      // Token side
+};
+
+export type LiquidityPlanCfg = {
+  // Address that will receive the LP tokens. Defaults to the
+  // funding wallet's address if omitted.
+  recipient?: string;
+  // How long (seconds) the swap-router deadline is from "now". 600s
+  // (10 minutes) is a safe default for slow chains.
+  deadlineSec?: number;
+  pools: LiquidityPoolCfg[];
+};
+
 export type Config = {
   chain: ChainCfg;
   fundingWallet: { privateKey: string };
@@ -131,6 +154,9 @@ export type Config = {
   // Optional: list of markets for the multi-mm command. Ignored by
   // every other command, which operate on the single `token` field.
   markets?: MarketCfg[];
+  // Optional: pool-creation plan for `add-liquidity`. Funding wallet
+  // must hold enough native VLRX AND enough of each token.
+  liquidityPlan?: LiquidityPlanCfg;
 };
 
 export async function loadConfig(path: string): Promise<Config> {
