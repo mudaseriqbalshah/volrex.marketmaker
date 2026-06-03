@@ -32,6 +32,7 @@ export type OperationCfg = {
   type:
     | "fire"
     | "scheduler"
+    | "multi-mm"
     | "distribute"
     | "collect"
     | "balances"
@@ -89,6 +90,37 @@ export type OperationCfg = {
   walletCount?: number;
 };
 
+// One market for the multi-mm command. Each market drives its own
+// MarketMakerScheduler against a different token + wallet slice.
+// Wallet ranges must not overlap across markets (otherwise multiple
+// schedulers would dispatch from the same wallet and fight over
+// nonces).
+export type MarketCfg = {
+  token: TokenCfg;
+  walletRange: [number, number] | "all";
+
+  // Either explicit target price OR multiplier-of-current.
+  mmTargetPrice?: string;
+  // If set and no mmTargetPrice, target = currentPrice × multiplier
+  // (computed once at startup from the live pool quote).
+  // e.g. "1.25" means push price up by 25%.
+  mmTargetMultiplier?: string;
+
+  mmToleranceBps?: number;
+  mmIntervalMs?: number;
+
+  // Per-side amount config (same shape as the single-token mode).
+  amountMode?: "absolute" | "percentage";
+  amountMin?: string;
+  amountMax?: string;
+  mmBuyMode?: "absolute" | "percentage";
+  mmBuyMin?: string;
+  mmBuyMax?: string;
+  mmSellMode?: "absolute" | "percentage";
+  mmSellMin?: string;
+  mmSellMax?: string;
+};
+
 export type Config = {
   chain: ChainCfg;
   fundingWallet: { privateKey: string };
@@ -96,6 +128,9 @@ export type Config = {
   token: TokenCfg;
   engine: EngineCfg;
   operation: OperationCfg;
+  // Optional: list of markets for the multi-mm command. Ignored by
+  // every other command, which operate on the single `token` field.
+  markets?: MarketCfg[];
 };
 
 export async function loadConfig(path: string): Promise<Config> {

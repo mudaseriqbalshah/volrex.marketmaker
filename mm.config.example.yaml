@@ -75,3 +75,117 @@ operation:
 
   # For gen-wallets:
   walletCount: 10
+
+# ── Multi-market configuration (for the `multi-mm` command) ─────────
+# One MarketMakerScheduler runs per entry, all concurrently in this
+# process. Each entry MUST claim a non-overlapping walletRange — two
+# schedulers can't dispatch from the same trading wallet without
+# fighting over the nonce.
+#
+# Two ways to set the target price per market:
+#   • mmTargetPrice: literal "0.0001" (native per 1 token)
+#   • mmTargetMultiplier: "1.25" → target = currentPrice × 1.25
+#     (computed once at startup from the live pool quote)
+#
+# Liquidity pools must exist before the scheduler can quote prices.
+# If a pool isn't created yet, `mm multi-mm` logs a warning for that
+# market and auto-captures the price as soon as the pool goes live.
+#
+# Example: 8 Volrex canonical tokens, each pushing price up 25% via
+# its own 10-wallet slice (so 80 trading wallets total are needed).
+markets:
+  - token: { address: "0xF5D6F3424E46862A6D2750e175cc5c4A6140E086", symbol: PROM, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [1, 10]
+    mmTargetMultiplier: "1.25"      # push price +25% from current
+    mmToleranceBps: 200
+    mmIntervalMs: 60000             # 1 emit / minute
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0x01f6d4f29Fab0617D1af3F8fDf6bD206131e078a", symbol: GAI, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [11, 20]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0x99BF6bEDa955dB9921FD4C7129Ab3672f3b17C36", symbol: MAC, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [21, 30]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0x1b38D0CAf7B85c18Be40AE342447878e464E4082", symbol: META, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [31, 40]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0xE0F7b5f405a44394be88DfC4327f784022135C7C", symbol: ANS, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [41, 50]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0xc424015480fe71B4D79D693937C375cF06A0914C", symbol: GenZ, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [51, 60]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0x6DE77E0573bb5555B7f2c84C42a5b52Ba25d7d80", symbol: MIL, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [61, 70]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
+
+  - token: { address: "0x33b186C1897746F1c9244562B315E44B3861CE70", symbol: RTKN, decimals: 18, defaultSlippageBps: 500 }
+    walletRange: [71, 80]
+    mmTargetMultiplier: "1.25"
+    mmToleranceBps: 200
+    mmIntervalMs: 60000
+    mmBuyMode: absolute
+    mmBuyMin: "0.5"
+    mmBuyMax: "2"
+    mmSellMode: percentage
+    mmSellMin: "10"
+    mmSellMax: "30"
