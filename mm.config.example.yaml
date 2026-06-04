@@ -245,3 +245,11 @@ realisticMM:
       targetMultiplier: "1.25"
     - token: { address: "0xc424015480fe71B4D79D693937C375cF06A0914C", symbol: GenZ, decimals: 18, defaultSlippageBps: 500 }
       targetMultiplier: "1.25"
+
+  # Buy probability per price regime (0..1). Lower = more sells in that
+  # regime. realistic-mm modulates these by the current behavioural
+  # phase (push amplifies, pullback inverts, consolidate dampens), so
+  # the actual side ratios drift over time on top of these baselines.
+  buyBiasBelowBand: 0.8     # mostly buys when price is below ramp
+  buyBiasInBand:    0.5     # balanced
+  buyBiasAboveBand: 0.2     # mostly sells when price is above ramp

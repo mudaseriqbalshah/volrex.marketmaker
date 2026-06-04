@@ -196,6 +196,16 @@ export type RealisticMMCfg = {
   sellMode: "absolute" | "percentage";
   sellMin: string;
   sellMax: string;
+  // Buy probability in each price regime (0..1). 0.8 means 80% of
+  // ticks in that regime fire Buys, 20% fire Sells. Sells in the
+  // "below-band" regime are what produce natural-looking two-sided
+  // flow even when the bot is biased upward. Defaults:
+  //   buyBiasBelowBand: 0.8   (mostly buys, some sells)
+  //   buyBiasInBand:    0.5   (balanced)
+  //   buyBiasAboveBand: 0.2   (mostly sells, some buys)
+  buyBiasBelowBand?: number;
+  buyBiasInBand?: number;
+  buyBiasAboveBand?: number;
   // 5 markets the bot rotates between (uniformly random per tick).
   markets: RealisticMarketCfg[];
 };

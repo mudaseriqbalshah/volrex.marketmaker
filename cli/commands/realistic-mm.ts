@@ -33,6 +33,79 @@ type MarketRuntime = {
   cache: ReturnType<typeof createBalanceCache>;
 };
 
+// ── Behavioural phase machine ────────────────────────────────────────
+// Real markets don't trade at a constant rate with a fixed bias. They
+// cycle through phases that look like:
+//
+//   push         strong directional trades, fast pace (price actually moves)
+//   consolidate  balanced flow, slower pace (price wiggles)
+//   pullback     brief counter-trend (mini reversal that catches stops)
+//   burst        rapid-fire trades, normal direction (volume spike)
+//
+// Each phase has its own timing multiplier (faster/slower than the
+// configured base interval), a bias adjustment vs the price-regime
+// baseline, and a duration sampled from a range so transitions look
+// organic instead of clock-like.
+type Phase = "push" | "consolidate" | "pullback" | "burst";
+
+const PHASE_WEIGHTS: { p: Phase; w: number }[] = [
+  { p: "consolidate", w: 0.50 }, // half the time, mostly quiet
+  { p: "push",        w: 0.30 },
+  { p: "burst",       w: 0.15 },
+  { p: "pullback",    w: 0.05 }, // rare, brief
+];
+
+function pickPhase(rng: () => number): Phase {
+  const r = rng();
+  let acc = 0;
+  for (const { p, w } of PHASE_WEIGHTS) {
+    acc += w;
+    if (r < acc) return p;
+  }
+  return "consolidate";
+}
+
+// Phase-specific tick interval (relative to base). Lower = faster.
+function phaseIntervalMs(phase: Phase, base: number, rng: () => number): number {
+  switch (phase) {
+    case "burst":       return Math.round(base * (0.2 + rng() * 0.4));  // 0.2–0.6×
+    case "push":        return Math.round(base * (0.6 + rng() * 0.7));  // 0.6–1.3×
+    case "consolidate": return Math.round(base * (0.9 + rng() * 1.8));  // 0.9–2.7×
+    case "pullback":    return Math.round(base * (1.0 + rng() * 2.0));  // 1.0–3.0×
+  }
+}
+
+// Phase duration in ms — how long this phase lasts before re-rolling.
+function phaseDurationMs(phase: Phase, rng: () => number): number {
+  // ranges in seconds
+  const [lo, hi] =
+    phase === "burst"    ? [10,  45]  :
+    phase === "pullback" ? [20,  60]  :
+    phase === "push"     ? [60, 240]  :
+                           [90, 360]; // consolidate
+  return Math.round((lo + rng() * (hi - lo)) * 1000);
+}
+
+// Phase modulator on top of the price-regime buy bias. Push amplifies
+// the directional pressure; pullback inverts it; consolidate dampens.
+function adjustBuyProb(phase: Phase, baseProb: number): number {
+  switch (phase) {
+    case "push":        return Math.min(0.97, baseProb + 0.15);
+    case "pullback":    return 1 - baseProb;
+    case "burst":       return baseProb;
+    case "consolidate": return 0.5 + (baseProb - 0.5) * 0.4;
+  }
+}
+
+// Trade size multiplier — power-law-ish so most trades are small with
+// occasional bigger ones. Mirrors real volume distributions.
+function sizeScale(rng: () => number): number {
+  const r = rng();
+  if (r < 0.80) return 0.5 + rng() * 0.8;   // 80%: small (0.5–1.3×)
+  if (r < 0.97) return 1.5 + rng() * 2.0;   // 17%: medium (1.5–3.5×)
+  return 3.5 + rng() * 4.0;                 // 3%: whale (3.5–7.5×)
+}
+
 export async function runRealisticMM(engine: Engine): Promise<void> {
   const cfgMaybe = engine.config.realisticMM;
   if (!cfgMaybe) {
@@ -91,12 +164,20 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
 
   const startedAt = Date.now();
   const durationMs = cfg.durationDays * 24 * 60 * 60 * 1000;
+  const rng = Math.random;
+
+  // Behavioural phase state. Re-rolled every phaseDurationMs.
+  let currentPhase: Phase = pickPhase(rng);
+  let phaseEndsAt: number = Date.now() + phaseDurationMs(currentPhase, rng);
+  let phaseTicksThisRound = 0;
 
   engine.worker.start();
   console.log(`\nRealistic MM started.`);
   console.log(`  ${markets.length} markets × ${totalWallets} wallets in a shared pool.`);
-  console.log(`  Target ramps over ${cfg.durationDays} days. Tick every ${cfg.intervalMs}ms.`);
+  console.log(`  Target ramps over ${cfg.durationDays} days. Base interval ${cfg.intervalMs}ms (jittered by phase).`);
   console.log(`  Tolerance band ±${cfg.toleranceBps}bps. Worker maxConcurrent=${engine.config.engine.maxConcurrent}.`);
+  console.log(`  Behavioural phases: consolidate / push / burst / pullback (auto-cycled).`);
+  console.log(`  Starting phase: ${currentPhase}.`);
   console.log(`  Press Ctrl+C to stop.\n`);
 
   let stopped = false;
@@ -136,33 +217,55 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
     const currentTarget =
       market.startPrice + ((market.endPrice - market.startPrice) * elapsedBps) / 10_000n;
 
-    // 5. Decide side based on price vs target band.
+    // 5. Decide side using a 2-step bias:
+    //    (a) base bias from price-vs-target regime
+    //    (b) modulated by current behavioural phase
     const tolBps = BigInt(cfg.toleranceBps);
     const lowBand = (currentTarget * (10_000n - tolBps)) / 10_000n;
     const highBand = (currentTarget * (10_000n + tolBps)) / 10_000n;
-    let side: "Buy" | "Sell";
-    if (actualPrice < lowBand) side = "Buy";
-    else if (actualPrice > highBand) side = "Sell";
-    else side = Math.random() < 0.5 ? "Buy" : "Sell";
+    let regime: "below" | "in-band" | "above";
+    let baseBuyProb: number;
+    if (actualPrice < lowBand) {
+      regime = "below";
+      baseBuyProb = cfg.buyBiasBelowBand ?? 0.8;
+    } else if (actualPrice > highBand) {
+      regime = "above";
+      baseBuyProb = cfg.buyBiasAboveBand ?? 0.2;
+    } else {
+      regime = "in-band";
+      baseBuyProb = cfg.buyBiasInBand ?? 0.5;
+    }
+    const buyProb = adjustBuyProb(currentPhase, baseBuyProb);
+    const side: "Buy" | "Sell" = rng() < buyProb ? "Buy" : "Sell";
 
     // 6. Pick a random wallet from the entire pool.
-    const wIdx = Math.floor(Math.random() * totalWallets);
+    const wIdx = Math.floor(rng() * totalWallets);
     const walletId = engine.config.tradingWallets[wIdx]!.label;
 
-    // 7. Build the action.
+    // 7. Build the action with a per-tick size scale (power-law-ish so
+    //    most trades are small with occasional whales).
+    const scale = sizeScale(rng);
+    const scaledRange = (minStr: string, maxStr: string) => {
+      const raw = Number(pickRandomInRange(minStr, maxStr));
+      return (raw * scale).toFixed(8);
+    };
+
     let action: NewAction;
+    let amountStr: string;
     if (side === "Buy") {
+      amountStr = scaledRange(cfg.buyMin, cfg.buyMax);
       const params: BuyParams = {
         tokenAddress: market.meta.token.address,
-        amountNative: pickRandomInRange(cfg.buyMin, cfg.buyMax),
+        amountNative: amountStr,
         slippageBps: market.meta.token.defaultSlippageBps,
         amountMode: cfg.buyMode,
       };
       action = { kind: "Buy", walletId, params };
     } else {
+      amountStr = scaledRange(cfg.sellMin, cfg.sellMax);
       const params: SellParams = {
         tokenAddress: market.meta.token.address,
-        amountToken: pickRandomInRange(cfg.sellMin, cfg.sellMax),
+        amountToken: amountStr,
         slippageBps: market.meta.token.defaultSlippageBps,
         amountMode: cfg.sellMode,
       };
@@ -171,16 +274,19 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
 
     const p = Number(actualPrice) / 1e18;
     const t = Number(currentTarget) / 1e18;
-    const decision = actualPrice < lowBand ? "below" : actualPrice > highBand ? "above" : "in-band";
+    const sizeTag = scale > 3 ? "WHALE" : scale > 1.5 ? "med" : "sm";
     console.log(
-      `[${market.meta.token.symbol}] price=${p.toFixed(10)} target=${t.toFixed(10)} (${decision}) → ${side.toLowerCase()} ${walletId}`,
+      `[${currentPhase.padEnd(11)}] [${market.meta.token.symbol.padEnd(4)}] price=${p.toFixed(10)} target=${t.toFixed(10)} (${regime}, buyP=${buyProb.toFixed(2)}) → ${side.toLowerCase()} ${walletId} amt=${amountStr} [${sizeTag}]`,
     );
 
     market.cache.tryEnqueue(action);
+    phaseTicksThisRound += 1;
   }
 
-  // Tick loop — uses setTimeout chain so a slow tick doesn't pile up
-  // overlapping calls (which is what setInterval would do).
+  // Tick loop — uses a setTimeout chain so a slow tick doesn't pile
+  // up overlapping calls. Interval per tick is phase-dependent so the
+  // pace itself shifts as we cycle through phases (burst = fast,
+  // consolidate = slow, etc).
   const loop = async () => {
     while (!stopped) {
       try {
@@ -188,7 +294,23 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
       } catch (err) {
         console.error("tick error:", err instanceof Error ? err.message : String(err));
       }
-      await new Promise((r) => setTimeout(r, cfg.intervalMs));
+      // Phase transition? Roll a new one if we've exceeded its duration.
+      if (Date.now() >= phaseEndsAt) {
+        const previousPhase = currentPhase;
+        let next: Phase = pickPhase(rng);
+        // Avoid immediately repeating the same phase too often — gives
+        // a more varied tape. Re-roll once if same as last.
+        if (next === previousPhase) next = pickPhase(rng);
+        currentPhase = next;
+        phaseEndsAt = Date.now() + phaseDurationMs(currentPhase, rng);
+        console.log(
+          `\n── PHASE ${previousPhase} → ${currentPhase} ` +
+            `(${phaseTicksThisRound} ticks, next change in ~${Math.round((phaseEndsAt - Date.now()) / 1000)}s) ──\n`,
+        );
+        phaseTicksThisRound = 0;
+      }
+      const nextSleep = phaseIntervalMs(currentPhase, cfg.intervalMs, rng);
+      await new Promise((r) => setTimeout(r, nextSleep));
     }
   };
   void loop();
