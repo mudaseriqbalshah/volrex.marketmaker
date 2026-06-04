@@ -1,4 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import path from "node:path";
 import * as YAML from "yaml";
 
 export type ChainCfg = {
@@ -148,6 +150,11 @@ export type Config = {
   chain: ChainCfg;
   fundingWallet: { privateKey: string };
   tradingWallets: WalletCfg[];
+  // Optional: path (relative to mm.config.yaml) of an external JSON
+  // file holding the wallets. Used for huge wallet sets (10k+) that
+  // would make the YAML unmanageable. If set, the JSON file's array
+  // wins; the YAML's tradingWallets field is ignored.
+  walletsFile?: string;
   token: TokenCfg;
   engine: EngineCfg;
   operation: OperationCfg;
@@ -159,11 +166,49 @@ export type Config = {
   liquidityPlan?: LiquidityPlanCfg;
 };
 
-export async function loadConfig(path: string): Promise<Config> {
-  const raw = await readFile(path, "utf8");
+export async function loadConfig(configPath: string): Promise<Config> {
+  const raw = await readFile(configPath, "utf8");
   const parsed = YAML.parse(raw) as Config;
+  // Resolve external wallets file if specified — load it BEFORE
+  // validation so the tradingWallets check sees the merged array.
+  if (parsed.walletsFile) {
+    const walletsPath = path.resolve(path.dirname(path.resolve(configPath)), parsed.walletsFile);
+    if (!existsSync(walletsPath)) {
+      // Empty file is OK — gen-wallets will create it.
+      parsed.tradingWallets = parsed.tradingWallets ?? [];
+    } else {
+      const t0 = Date.now();
+      const wraw = await readFile(walletsPath, "utf8");
+      const wallets = JSON.parse(wraw) as WalletCfg[];
+      parsed.tradingWallets = wallets;
+      const dt = Date.now() - t0;
+      if (wallets.length > 1000) {
+        // Only chatter for big sets so single-token configs stay quiet.
+        console.error(`Loaded ${wallets.length} trading wallets from ${parsed.walletsFile} (${dt}ms)`);
+      }
+    }
+  }
   validate(parsed);
   return parsed;
+}
+
+// Append new wallets to the external wallets file (or, if no walletsFile
+// is configured, fall back to writing them inline into the YAML).
+// Used by gen-wallets so a 75k-wallet job doesn't bloat mm.config.yaml.
+export async function appendWalletsExternal(
+  configPath: string,
+  cfg: Config,
+  newOnes: WalletCfg[],
+): Promise<{ usedExternal: boolean; path: string | null }> {
+  if (!cfg.walletsFile) return { usedExternal: false, path: null };
+  const walletsPath = path.resolve(path.dirname(path.resolve(configPath)), cfg.walletsFile);
+  const existing: WalletCfg[] = existsSync(walletsPath)
+    ? (JSON.parse(await readFile(walletsPath, "utf8")) as WalletCfg[])
+    : [];
+  const merged = [...existing, ...newOnes];
+  await writeFile(walletsPath, JSON.stringify(merged), { mode: 0o600 });
+  cfg.tradingWallets = merged;
+  return { usedExternal: true, path: walletsPath };
 }
 
 export async function saveConfig(path: string, cfg: Config): Promise<void> {

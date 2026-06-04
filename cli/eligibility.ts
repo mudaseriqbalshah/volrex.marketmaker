@@ -84,33 +84,42 @@ export function createBalanceCache(
     return b.tok > 0n && b.native >= GAS_RESERVE;
   }
 
+  // Lazy version: if the wallet isn't in the cache yet (large wallet
+  // sets where pre-polling was skipped), fetch fresh in the background
+  // and only enqueue once we have data. Stays fire-and-forget so the
+  // scheduler's emit signature stays sync.
   function tryEnqueue(a: NewAction): void {
-    if (a.kind === "Buy") {
-      const params = a.params as BuyParams;
-      const m = params.amountMode ?? "absolute";
-      const ok = m === "percentage"
-        ? eligiblePercentageBuy(a.walletId)
-        : eligibleAbsoluteBuy(a.walletId, params.amountNative);
-      if (!ok) {
-        const b = cache.get(a.walletId);
-        const have = b ? formatEther(b.native) : "?";
-        console.log(`${logPrefix}  skip Buy  ${a.walletId} — insufficient native (have ${have} VLRX)`);
-        return;
+    void (async () => {
+      if ((a.kind === "Buy" || a.kind === "Sell") && !cache.has(a.walletId)) {
+        await refreshOne(a.walletId);
       }
-    } else if (a.kind === "Sell") {
-      const params = a.params as SellParams;
-      const m = params.amountMode ?? "absolute";
-      const ok = m === "percentage"
-        ? eligiblePercentageSell(a.walletId)
-        : eligibleAbsoluteSell(a.walletId, params.amountToken);
-      if (!ok) {
-        const b = cache.get(a.walletId);
-        const haveTok = b ? formatUnits(b.tok, token.decimals) : "?";
-        console.log(`${logPrefix}  skip Sell ${a.walletId} — insufficient ${token.symbol} (have ${haveTok})`);
-        return;
+      if (a.kind === "Buy") {
+        const params = a.params as BuyParams;
+        const m = params.amountMode ?? "absolute";
+        const ok = m === "percentage"
+          ? eligiblePercentageBuy(a.walletId)
+          : eligibleAbsoluteBuy(a.walletId, params.amountNative);
+        if (!ok) {
+          const b = cache.get(a.walletId);
+          const have = b ? formatEther(b.native) : "?";
+          console.log(`${logPrefix}  skip Buy  ${a.walletId} — insufficient native (have ${have} VLRX)`);
+          return;
+        }
+      } else if (a.kind === "Sell") {
+        const params = a.params as SellParams;
+        const m = params.amountMode ?? "absolute";
+        const ok = m === "percentage"
+          ? eligiblePercentageSell(a.walletId)
+          : eligibleAbsoluteSell(a.walletId, params.amountToken);
+        if (!ok) {
+          const b = cache.get(a.walletId);
+          const haveTok = b ? formatUnits(b.tok, token.decimals) : "?";
+          console.log(`${logPrefix}  skip Sell ${a.walletId} — insufficient ${token.symbol} (have ${haveTok})`);
+          return;
+        }
       }
-    }
-    void engine.queue.enqueue(a);
+      void engine.queue.enqueue(a);
+    })();
   }
 
   return { refreshAll, startPolling, stopPolling, tryEnqueue };

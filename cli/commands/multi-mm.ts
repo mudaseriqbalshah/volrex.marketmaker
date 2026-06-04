@@ -69,11 +69,21 @@ export async function runMultiMM(engine: Engine): Promise<void> {
       console.log(`[${m.token.symbol}] target = auto-capture from first tick`);
     }
 
-    // Per-market balance cache. Seeded synchronously so the very
-    // first emission has data. Refreshes in the background.
+    // Per-market balance cache. For small wallet sets we pre-poll up
+    // front so the very first emission has data. For large sets
+    // (>500 wallets) we skip the bulk poll — the lazy path inside
+    // tryEnqueue will fetch each wallet on first use, which is the
+    // only sensible strategy when a market owns 15k+ wallets.
     const cache = createBalanceCache(engine, m.token, walletLabels, `[${m.token.symbol}]`);
-    await cache.refreshAll();
-    cache.startPolling(15_000);
+    if (walletLabels.length <= 500) {
+      await cache.refreshAll();
+    } else {
+      console.log(`[${m.token.symbol}] ${walletLabels.length} wallets — using lazy balance fetch (no bulk pre-poll)`);
+    }
+    // Background polling stays light too: every 60s for large markets,
+    // 15s for small ones. With 15k wallets a 15s refresh would mean
+    // 1k RPC calls/sec average.
+    cache.startPolling(walletLabels.length > 500 ? 60_000 : 15_000);
     caches.push(cache);
 
     // Pre-seed the decimals cache used by dispatch.ts so it doesn't
