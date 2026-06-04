@@ -13,6 +13,7 @@ import { runGenWallets } from "./commands/gen-wallets";
 import { runClear } from "./commands/clear";
 import { runMultiMM } from "./commands/multi-mm";
 import { runAddLiquidity } from "./commands/add-liquidity";
+import { runMigrateWallets } from "./commands/migrate-wallets";
 
 const HELP = `mm — market maker CLI
 
@@ -29,6 +30,7 @@ Commands:
   add-liquidity       Create pools for every entry in config.liquidityPlan.pools
   balances            Show native + active-token balances for every wallet
   gen-wallets         Generate N wallets and append to the config file
+  migrate-wallets     Move inline tradingWallets into a separate mm.wallets.json
   clear               Remove every action from the local queue state
   help                Show this message
 
@@ -106,6 +108,11 @@ async function main(): Promise<void> {
   // gen-wallets doesn't need a full engine; it just edits the config file.
   if (cmdName === "gen-wallets") {
     await runGenWallets(cfgPath, cfg);
+    return;
+  }
+  // migrate-wallets is a one-shot file rewrite; no engine needed.
+  if (cmdName === "migrate-wallets") {
+    await runMigrateWallets(cfgPath, cfg);
     return;
   }
 
