@@ -35,6 +35,7 @@ export type OperationCfg = {
     | "fire"
     | "scheduler"
     | "multi-mm"
+    | "realistic-mm"
     | "distribute"
     | "collect"
     | "balances"
@@ -164,6 +165,39 @@ export type Config = {
   // Optional: pool-creation plan for `add-liquidity`. Funding wallet
   // must hold enough native VLRX AND enough of each token.
   liquidityPlan?: LiquidityPlanCfg;
+  // Optional: unified-pool realistic market maker (`realistic-mm`
+  // command). Any of the 75k wallets can trade any of the markets,
+  // and each market's target price ramps linearly from the price
+  // observed at start to start × targetMultiplier over durationDays.
+  realisticMM?: RealisticMMCfg;
+};
+
+export type RealisticMarketCfg = {
+  token: TokenCfg;
+  // Final target price = startPrice × multiplier. e.g. "1.25" means
+  // push the price up 25% by the end of durationDays.
+  targetMultiplier: string;
+};
+
+export type RealisticMMCfg = {
+  // How long to ramp the target. The bot keeps running after the
+  // ramp ends (just defending the final target).
+  durationDays: number;
+  // Milliseconds between scheduler emissions (one (wallet × market)
+  // pick per tick).
+  intervalMs: number;
+  // Tolerance band in bps around the ramp's current target.
+  toleranceBps: number;
+  // Buy amount sizing.
+  buyMode: "absolute" | "percentage";
+  buyMin: string;
+  buyMax: string;
+  // Sell amount sizing.
+  sellMode: "absolute" | "percentage";
+  sellMin: string;
+  sellMax: string;
+  // 5 markets the bot rotates between (uniformly random per tick).
+  markets: RealisticMarketCfg[];
 };
 
 export async function loadConfig(configPath: string): Promise<Config> {

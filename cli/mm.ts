@@ -12,6 +12,7 @@ import { runBalances } from "./commands/balances";
 import { runGenWallets } from "./commands/gen-wallets";
 import { runClear } from "./commands/clear";
 import { runMultiMM } from "./commands/multi-mm";
+import { runRealisticMM } from "./commands/realistic-mm";
 import { runAddLiquidity } from "./commands/add-liquidity";
 import { runMigrateWallets } from "./commands/migrate-wallets";
 
@@ -27,6 +28,7 @@ Commands:
   fire                One-shot batch of Buy/Sell across wallets
   scheduler           Long-running random/round-robin scheduler (Ctrl+C to stop)
   multi-mm            Run a market-maker per entry in config.markets concurrently
+  realistic-mm        Shared-pool MM: any wallet × any market, target ramps over N days
   add-liquidity       Create pools for every entry in config.liquidityPlan.pools
   balances            Show native + active-token balances for every wallet
   gen-wallets         Generate N wallets and append to the config file
@@ -126,7 +128,7 @@ async function main(): Promise<void> {
     const opType =
       cmdName === "run"
         ? cfg.operation.type
-        : (cmdName as "distribute" | "collect" | "fire" | "scheduler" | "multi-mm" | "add-liquidity" | "balances" | "clear");
+        : (cmdName as "distribute" | "collect" | "fire" | "scheduler" | "multi-mm" | "realistic-mm" | "add-liquidity" | "balances" | "clear");
 
     switch (opType) {
       case "distribute":
@@ -146,6 +148,9 @@ async function main(): Promise<void> {
         break;
       case "multi-mm":
         await runMultiMM(engine);
+        break;
+      case "realistic-mm":
+        await runRealisticMM(engine);
         break;
       case "add-liquidity":
         await runAddLiquidity(engine);

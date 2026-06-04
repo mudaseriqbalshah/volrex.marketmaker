@@ -209,3 +209,39 @@ liquidityPlan:
     - { symbol: MAC,  token: "0x99BF6bEDa955dB9921FD4C7129Ab3672f3b17C36", decimals: 18, nativeAmount: "100000", tokenAmount: "28000" }
     - { symbol: META, token: "0x1b38D0CAf7B85c18Be40AE342447878e464E4082", decimals: 18, nativeAmount: "100000", tokenAmount: "7000000000" }
     - { symbol: GenZ, token: "0xc424015480fe71B4D79D693937C375cF06A0914C", decimals: 18, nativeAmount: "100000", tokenAmount: "700000000000" }
+
+# ── realistic-mm: shared-pool, ramping-target market maker ──────────
+# Any of your trading wallets can trade any market. Each market's
+# target ramps linearly from the price observed at startup → start
+# × targetMultiplier over durationDays. Result: a slow, natural-
+# looking price drift instead of an immediate spike.
+#
+# Differences from `markets:` (used by `multi-mm`):
+#   - No walletRange. Wallet picks are uniform-random from the full
+#     tradingWallets pool every tick.
+#   - Target ramps over time. multi-mm targets are static.
+#
+# Sizing example: 75k wallets, 5 markets, 2s tick. Over 30 days that's
+# ~1.3M emissions (~260k per market, ~17 emissions per wallet).
+# At avg buy 0.3 VLRX, total burn ≈ 80k VLRX over the month.
+realisticMM:
+  durationDays: 30
+  intervalMs: 2000              # 1 emission every 2s across all markets
+  toleranceBps: 200             # ±2% band around the ramping target
+  buyMode: absolute
+  buyMin: "0.1"
+  buyMax: "0.5"
+  sellMode: percentage
+  sellMin: "10"
+  sellMax: "30"
+  markets:
+    - token: { address: "0xF5D6F3424E46862A6D2750e175cc5c4A6140E086", symbol: PROM, decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
+    - token: { address: "0x01f6d4f29Fab0617D1af3F8fDf6bD206131e078a", symbol: GAI,  decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
+    - token: { address: "0x99BF6bEDa955dB9921FD4C7129Ab3672f3b17C36", symbol: MAC,  decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
+    - token: { address: "0x1b38D0CAf7B85c18Be40AE342447878e464E4082", symbol: META, decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
+    - token: { address: "0xc424015480fe71B4D79D693937C375cF06A0914C", symbol: GenZ, decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"

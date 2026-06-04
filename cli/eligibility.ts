@@ -48,9 +48,20 @@ export function createBalanceCache(
     await Promise.all(walletLabels.map((w) => refreshOne(w)));
   }
 
+  // Refresh only the wallets we've already touched. Suitable for the
+  // background poll in fully-lazy mode (e.g. 75k-wallet realistic-mm
+  // where pre-polling all is impossible).
+  async function refreshKnown(): Promise<void> {
+    const keys = [...cache.keys()];
+    if (keys.length === 0) return;
+    await Promise.all(keys.map((w) => refreshOne(w)));
+  }
+
   function startPolling(intervalMs = 15_000): void {
     if (timer !== null) return;
-    timer = setInterval(() => void refreshAll(), intervalMs);
+    // Always refresh only what's known to keep RPC load proportional
+    // to actual usage, not configured wallet count.
+    timer = setInterval(() => void refreshKnown(), intervalMs);
   }
 
   function stopPolling(): void {
