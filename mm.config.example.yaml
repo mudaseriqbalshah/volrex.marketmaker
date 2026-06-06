@@ -245,6 +245,13 @@ realisticMM:
       targetMultiplier: "1.25"
     - token: { address: "0xc424015480fe71B4D79D693937C375cF06A0914C", symbol: GenZ, decimals: 18, defaultSlippageBps: 500 }
       targetMultiplier: "1.25"
+    # Newly-added tokens — pools may not exist at start; realistic-mm
+    # logs a warning per tick until liquidity is added, then auto-picks
+    # them up without a restart.
+    - token: { address: "0x0c20966eD46A3A54b66eEc84d9201c8cc9ECaA66", symbol: LMS,  decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
+    - token: { address: "0x67e854C805631eE3e7F050c29F40b9633d59F744", symbol: GASM, decimals: 18, defaultSlippageBps: 500 }
+      targetMultiplier: "1.25"
 
   # Buy probability per price regime (0..1). Lower = more sells in that
   # regime. realistic-mm modulates these by the current behavioural
