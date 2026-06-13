@@ -171,6 +171,41 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
   let phaseEndsAt: number = Date.now() + phaseDurationMs(currentPhase, rng);
   let phaseTicksThisRound = 0;
 
+  // ── Connectivity tracker ───────────────────────────────────────────
+  // When the RPC drops we don't want to spam the console with one
+  // identical error per tick. Track consecutive failures; log once when
+  // we cross a threshold ("offline"), once again when the first success
+  // returns ("back online"). The loop also adds backoff sleep on top
+  // of the configured intervalMs so we don't hammer a down RPC.
+  let consecutiveFailures = 0;
+  let offlineSince: number | null = null;
+  const OFFLINE_THRESHOLD = 3;       // ticks of failure before declaring offline
+  const BACKOFF_MAX_MS = 30_000;     // cap added sleep at 30s
+  const BACKOFF_STEP_MS = 2_000;     // 2s extra per failed tick after threshold
+
+  function noteFailure(): void {
+    consecutiveFailures += 1;
+    if (consecutiveFailures === OFFLINE_THRESHOLD && offlineSince === null) {
+      offlineSince = Date.now();
+      console.error(
+        `\n⚠  RPC seems unreachable (${consecutiveFailures} consecutive failed quotes). ` +
+          `Bot is waiting — will resume automatically once connectivity returns.\n`,
+      );
+    }
+  }
+  function noteSuccess(): void {
+    if (offlineSince !== null) {
+      const downSec = Math.round((Date.now() - offlineSince) / 1000);
+      console.log(`\n✓ Connectivity restored after ${downSec}s. Resuming normal pace.\n`);
+      offlineSince = null;
+    }
+    consecutiveFailures = 0;
+  }
+  function backoffMs(): number {
+    if (consecutiveFailures < OFFLINE_THRESHOLD) return 0;
+    return Math.min(BACKOFF_MAX_MS, (consecutiveFailures - OFFLINE_THRESHOLD + 1) * BACKOFF_STEP_MS);
+  }
+
   engine.worker.start();
   console.log(`\nRealistic MM started.`);
   console.log(`  ${markets.length} markets × ${totalWallets} wallets in a shared pool.`);
@@ -189,7 +224,10 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
 
     // 2. If we didn't capture the start price earlier (pool missing
     //    at boot), try again now. Same applies if the pool just got
-    //    initialized between ticks.
+    //    initialized between ticks. A quoteOut error here is also
+    //    counted toward the connectivity tracker — could be either
+    //    "pool still missing" or "RPC unreachable" — we can't tell
+    //    locally, so we treat both as failures.
     if (market.startPrice === 0n) {
       try {
         market.startPrice = await quoteOut(router as never, market.unitToken, market.path);
@@ -198,8 +236,10 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
         console.log(
           `[${market.meta.token.symbol}] start price captured mid-run: ${formatUnits(market.startPrice, 18)} → end ${formatUnits(market.endPrice, 18)}`,
         );
+        noteSuccess();
       } catch {
-        return; // skip — pool still missing
+        noteFailure();
+        return; // skip — pool still missing or RPC down
       }
     }
 
@@ -207,7 +247,9 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
     let actualPrice: bigint;
     try {
       actualPrice = await quoteOut(router as never, market.unitToken, market.path);
+      noteSuccess();
     } catch {
+      noteFailure();
       return;
     }
 
@@ -309,8 +351,11 @@ export async function runRealisticMM(engine: Engine): Promise<void> {
         );
         phaseTicksThisRound = 0;
       }
-      const nextSleep = phaseIntervalMs(currentPhase, cfg.intervalMs, rng);
-      await new Promise((r) => setTimeout(r, nextSleep));
+      const phaseSleep = phaseIntervalMs(currentPhase, cfg.intervalMs, rng);
+      // Add exponential-ish backoff on top when we appear offline so we
+      // stop hammering the down RPC. Cap at BACKOFF_MAX_MS per tick.
+      const extra = backoffMs();
+      await new Promise((r) => setTimeout(r, phaseSleep + extra));
     }
   };
   void loop();

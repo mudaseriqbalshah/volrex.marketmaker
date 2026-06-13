@@ -178,6 +178,26 @@ async function main(): Promise<void> {
   }
 }
 
+// ── Last-resort safety net for long-running commands ───────────────────
+// realistic-mm / multi-mm / scheduler all rely on their own try/catch
+// blocks around RPC calls so a network hiccup doesn't crash the loop.
+// But background tasks (balance polling, indexer push, in-flight tx
+// receipts) can still raise stray rejections that Node would otherwise
+// treat as fatal. Survive them — log and keep running.
+//
+// One-shot commands (distribute, fire, etc.) finish quickly so even if
+// they hit an unhandled rejection during shutdown, the impact is just
+// that they exit non-zero anyway. The long-running ones genuinely need
+// this — a 30-day MM can't terminate because of a single dropped TCP
+// connection in some forgotten promise.
+process.on("unhandledRejection", (reason) => {
+  const msg = reason instanceof Error ? reason.message : String(reason);
+  console.error(`[unhandledRejection] ${msg}`);
+});
+process.on("uncaughtException", (err) => {
+  console.error(`[uncaughtException] ${err.stack ?? err.message}`);
+});
+
 main().catch((err) => {
   console.error(err instanceof Error ? err.stack ?? err.message : String(err));
   process.exit(1);
