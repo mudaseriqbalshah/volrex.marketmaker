@@ -15,8 +15,6 @@
 // in-flight cost so a stuck request can't pile up.
 // ────────────────────────────────────────────────────────────────────────────
 
-const INDEXER_URL = process.env.INDEXER_URL ?? "";
-const INDEXER_CRON_SECRET = process.env.INDEXER_CRON_SECRET ?? "";
 const INDEXER_TIMEOUT_MS = 4_000;
 
 // Crude in-flight de-dupe — if a previous notification is still pending, don't
@@ -24,17 +22,39 @@ const INDEXER_TIMEOUT_MS = 4_000;
 // so re-firing during a burst of trades just wastes RPC quota.
 let inFlight: AbortController | null = null;
 
+// Read env at call time, not at module load. The MM CLI loads .env.local AFTER
+// import-graph evaluation finishes, so reading env at the top level would
+// capture an empty string before `loadEnvConfig` runs.
+let warnedOnce = false;
+function readEnv(): { url: string; secret: string } {
+  return {
+    url: process.env.INDEXER_URL ?? "",
+    secret: process.env.INDEXER_CRON_SECRET ?? "",
+  };
+}
+
 export function notifyIndexer(reason: string): void {
-  if (!INDEXER_URL || !INDEXER_CRON_SECRET) return;
+  const { url, secret } = readEnv();
+  if (!url || !secret) {
+    if (!warnedOnce) {
+      warnedOnce = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[indexer] INDEXER_URL or INDEXER_CRON_SECRET unset — skipping all push hooks. " +
+          "Set both in .env.local to push swaps to vorlexscan.com after each trade.",
+      );
+    }
+    return;
+  }
   if (inFlight) return;
 
   const ctrl = new AbortController();
   inFlight = ctrl;
   const timer = setTimeout(() => ctrl.abort(), INDEXER_TIMEOUT_MS);
 
-  fetch(`${INDEXER_URL.replace(/\/$/, "")}/api/cron`, {
+  fetch(`${url.replace(/\/$/, "")}/api/cron`, {
     method: "GET",
-    headers: { authorization: `Bearer ${INDEXER_CRON_SECRET}` },
+    headers: { authorization: `Bearer ${secret}` },
     signal: ctrl.signal,
   })
     .catch(() => {

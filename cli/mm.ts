@@ -1,4 +1,11 @@
 #!/usr/bin/env node
+// Load .env.local BEFORE any other import — modules that capture process.env
+// at top level (lib/indexer.ts reads INDEXER_URL / INDEXER_CRON_SECRET there)
+// would otherwise see undefined, because the CLI is not started by Next.js
+// itself. @next/env is already on disk via the Next dev dep.
+import { loadEnvConfig } from "@next/env";
+loadEnvConfig(process.cwd());
+
 import { parseArgs } from "node:util";
 import path from "node:path";
 import { loadConfig } from "./config";
