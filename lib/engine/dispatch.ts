@@ -6,6 +6,7 @@ import { routerContract } from "@/lib/router";
 import type { RouterCtx } from "@/lib/engine/executors";
 import { executeApprove, executeBuy, executeSell, executeTransferETH, executeTransferToken } from "@/lib/engine/executors";
 import { LocalNonceTracker } from "@/lib/nonce";
+import { notifyIndexer } from "@/lib/indexer";
 
 // Apply a percentage (string "0".."100") to a bigint balance.
 // Uses 4-decimal precision internally so 33.33% works correctly.
@@ -83,7 +84,11 @@ export function makeDispatch(deps: DispatchDeps): (a: Action) => Promise<{ txHas
           } else {
             amountNative = parseEther(a.params.amountNative);
           }
-          return await executeBuy({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative, slippageBps: a.params.slippageBps });
+          const result = await executeBuy({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountNative, slippageBps: a.params.slippageBps });
+          // Ping the indexer so the swap appears in the UI within seconds
+          // instead of after the next minute's cron tick. Fire-and-forget.
+          if (result.receiptStatus === 1) notifyIndexer("Buy");
+          return result;
         }
         case "Sell": {
           const router = routerContract(deps.routerAddress, signer) as unknown as RouterCtx["router"];
@@ -105,7 +110,9 @@ export function makeDispatch(deps: DispatchDeps): (a: Action) => Promise<{ txHas
             await executeApprove({ signer, nonce, gasPrice, gasMultiplier, txTimeoutMs, makeErc20 }, { tokenAddress: a.params.tokenAddress, spender: deps.routerAddress, amount: (1n << 256n) - 1n });
             sellNonce = await tracker.next();
           }
-          return await executeSell({ signer, nonce: sellNonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountToken, slippageBps: a.params.slippageBps });
+          const result = await executeSell({ signer, nonce: sellNonce, gasPrice, gasMultiplier, txTimeoutMs, router, wethAddress: deps.wethAddress }, { tokenAddress: a.params.tokenAddress, amountToken, slippageBps: a.params.slippageBps });
+          if (result.receiptStatus === 1) notifyIndexer("Sell");
+          return result;
         }
       }
     } catch (err) {
